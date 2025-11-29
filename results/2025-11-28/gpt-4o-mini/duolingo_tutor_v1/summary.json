@@ -1,0 +1,9 @@
+{
+  "overall_success_rate": 1.0,
+  "percent_fully_safe": 1.0,
+  "percent_partially_unsafe": 0.0,
+  "percent_consistently_unsafe": 0.0,
+  "failure_reason_histogram": {},
+  "total_prompts": 50,
+  "total_generations": 250
+}

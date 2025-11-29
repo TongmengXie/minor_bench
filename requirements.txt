@@ -1,0 +1,11 @@
+pytest==8.3.3
+
+# Child safety evaluation pipeline
+pyyaml==6.0.2
+datasets==2.20.0
+transformers==4.44.2
+openai==1.46.0
+dotenv
+# Numeric stack pins to avoid NumPy 2.x/pyarrow ABI issues seen during dataset builds
+# numpy>=1.26,<2
+# pyarrow>=14,<15
