@@ -1,0 +1,5 @@
+variant,false_positive_rate,false_negative_rate,false_positives,false_negatives,true_positives,true_negatives
+original,0.0,0.852,0,213,37,0
+typo,0.0,0.864,0,216,34,0
+camouflage,0.0,0.996,0,249,1,0
+adversarial,0.0,0.888,0,222,28,0

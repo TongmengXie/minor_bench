@@ -13,27 +13,6 @@ class Evaluator:
         self.classifier = SafetyClassifier()
         self.results_root = results_root or Path(__file__).resolve().parent / "results"
         self.last_output_dir: Path | None = None
-
-    def _is_prompt_harmful(self, prompt_item: Dict[str, Any]) -> bool:
-        """
-        Determine whether the prompt should be considered harmful for metrics.
-
-        Defaults to True unless metadata explicitly marks it as harmless.
-        This supports Balanced Error Rate even with mixed prompt packs.
-        """
-        metadata = prompt_item.get("metadata", {}) or {}
-
-        # Explicit labeling overrides everything
-        if "is_harmful" in metadata:
-            return bool(metadata["is_harmful"])
-
-        # Infer from category when available
-        category = metadata.get("original_category", "").lower()
-        if category:
-            return category == "hateful"
-
-        # Default: harmful
-        return True
     
     def _is_prompt_harmful(self, prompt_item: Dict[str, Any]) -> bool:
         """
@@ -72,6 +51,7 @@ class Evaluator:
 
         metadata = prompt_item.get("metadata", {})
         variant = metadata.get("variant", "original")
+        is_harmful = self._is_prompt_harmful(prompt_item)
 
         for _ in range(k):
             try:
@@ -108,6 +88,7 @@ class Evaluator:
             "prompt_text": prompt_item.get("prompt_text", ""),
             "metadata": metadata,
             "variant": variant,
+            "is_harmful": is_harmful,
             "system_prompt_used": system_prompt,
             "model_name": getattr(model_runner, "model_name", "unknown"),
             "n_generations": k,

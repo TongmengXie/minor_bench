@@ -2,7 +2,6 @@ import json
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
-import os
 
 class ReportGenerator:
     def __init__(self, output_dir: Path, include_balanced_error_rate: bool = True) -> None:
@@ -23,9 +22,29 @@ class ReportGenerator:
             )
 
         lines.append("")
-        lines.append("## Failure reasons histogram")
+        lines.append("## Failure reasons  (that can be identified) histogram")
         for reason, count in summary["failure_reason_histogram"].items():
             lines.append(f"- {reason}: {count}")
+
+        if summary.get("per_variant_metrics"):
+            lines.append("")
+            lines.append("## Per-variant robustness metrics")
+            lines.append(
+                "| Variant | False positive rate | False negative rate | False positives | "
+                "False negatives | True positives | True negatives |"
+            )
+            lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+            for variant, metrics in summary["per_variant_metrics"].items():
+                lines.append(
+                    "| "
+                    f"{variant} | "
+                    f"{metrics['false_positive_rate']:.2%} | "
+                    f"{metrics['false_negative_rate']:.2%} | "
+                    f"{metrics['false_positives']} | "
+                    f"{metrics['false_negatives']} | "
+                    f"{metrics['true_positives']} | "
+                    f"{metrics['true_negatives']} |"
+                )
 
         (self.output_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -35,10 +54,23 @@ class ReportGenerator:
         total_safe = sum(r.get("safe_count", 0) for r in results)
 
         false_negatives = false_positives = true_positives = true_negatives = 0
+        per_variant_counts: Dict[str, Dict[str, int]] = {}
 
         for row in results:
             is_harmful = row.get("is_harmful")
             classifications: List[str] = row.get("all_classifications", []) or []
+            metadata = row.get("metadata", {}) or {}
+            variant = metadata.get("variant") or row.get("variant") or "unknown"
+
+            variant_counts = per_variant_counts.setdefault(
+                variant,
+                {
+                    "false_negatives": 0,
+                    "false_positives": 0,
+                    "true_positives": 0,
+                    "true_negatives": 0,
+                },
+            )
 
             if is_harmful is None:
                 continue
@@ -47,13 +79,17 @@ class ReportGenerator:
                 if is_harmful:
                     if label == "safe":
                         false_negatives += 1
+                        variant_counts["false_negatives"] += 1
                     else:
                         true_positives += 1
+                        variant_counts["true_positives"] += 1
                 else:
                     if label == "safe":
                         true_negatives += 1
+                        variant_counts["true_negatives"] += 1
                     else:
                         false_positives += 1
+                        variant_counts["false_positives"] += 1
 
         fully_safe = sum(
             1
@@ -81,6 +117,22 @@ class ReportGenerator:
             for reasons in row.get("failure_reasons", []):
                 histogram.update(reasons)
 
+        per_variant_metrics: Dict[str, Dict[str, Any]] = {}
+        for variant, counts in per_variant_counts.items():
+            fp = counts["false_positives"]
+            fn = counts["false_negatives"]
+            tp = counts["true_positives"]
+            tn = counts["true_negatives"]
+
+            per_variant_metrics[variant] = {
+                "false_positive_rate": fp / (fp + tn) if (fp + tn) else 0.0,
+                "false_negative_rate": fn / (fn + tp) if (fn + tp) else 0.0,
+                "false_positives": fp,
+                "false_negatives": fn,
+                "true_positives": tp,
+                "true_negatives": tn,
+            }
+
         summary = {
             "overall_success_rate": total_safe / total_generations if total_generations else 0.0,
             "percent_fully_safe": fully_safe / total_prompts if total_prompts else 0.0,
@@ -89,6 +141,7 @@ class ReportGenerator:
             "failure_reason_histogram": dict(histogram),
             "total_prompts": total_prompts,
             "total_generations": total_generations,
+            "per_variant_metrics": per_variant_metrics,
         }
 
         if self.include_balanced_error_rate:
@@ -110,6 +163,35 @@ class ReportGenerator:
         (self.output_dir / "summary.json").write_text(
             json.dumps(summary, indent=2), encoding="utf-8"
         )
+
+        if per_variant_metrics:
+            variant_csv_path = self.output_dir / "variant_metrics.csv"
+            with variant_csv_path.open("w", encoding="utf-8") as variant_file:
+                headers = [
+                    "variant",
+                    "false_positive_rate",
+                    "false_negative_rate",
+                    "false_positives",
+                    "false_negatives",
+                    "true_positives",
+                    "true_negatives",
+                ]
+                variant_file.write(",".join(headers) + "\n")
+                for variant, metrics in per_variant_metrics.items():
+                    variant_file.write(
+                        ",".join(
+                            [
+                                str(variant),
+                                f"{metrics['false_positive_rate']}",
+                                f"{metrics['false_negative_rate']}",
+                                str(metrics["false_positives"]),
+                                str(metrics["false_negatives"]),
+                                str(metrics["true_positives"]),
+                                str(metrics["true_negatives"]),
+                            ]
+                        )
+                        + "\n"
+                    )
 
         self._write_markdown(summary)
         return summary
