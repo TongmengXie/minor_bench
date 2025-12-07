@@ -37,6 +37,25 @@ def parse_args() -> argparse.Namespace:
         help="Optional JSON config string",
     )
     parser.add_argument(
+        "--guardrail_model",
+        type=str,
+        default=None,
+        help="Optional guardrail model name (e.g., IBM/NVIDIA guardrail model on Scaleway)",
+    )
+    parser.add_argument(
+        "--guardrail_provider",
+        type=str,
+        default="scaleway",
+        choices=["openai", "openai_api", "scaleway", "auto"],
+        help="Provider used for the guardrail model (defaults to Scaleway)",
+    )
+    parser.add_argument(
+        "--guardrail_prompt",
+        type=str,
+        default=None,
+        help="Override the default system prompt used for guardrail classification",
+    )
+    parser.add_argument(
         "--include_variants",
         type=str,
         default=None,
@@ -58,6 +77,12 @@ def main() -> None:
     if args.config:
         import json
         config = json.loads(args.config)
+    if args.guardrail_model:
+        config["guardrail_model"] = args.guardrail_model
+    if args.guardrail_provider:
+        config["guardrail_provider"] = args.guardrail_provider
+    if args.guardrail_prompt:
+        config["guardrail_prompt"] = args.guardrail_prompt
     include_variants = args.include_variants.split(",") if args.include_variants else None
     exclude_variants = args.exclude_variants.split(",") if args.exclude_variants else None
     model_runner = ModelRunner(args.model_name, args.provider, config=config)

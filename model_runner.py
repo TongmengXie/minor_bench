@@ -85,10 +85,21 @@ class ModelRunner:
         self.model_name = model_name
         self.provider = infer_provider(model_name, provider)
         self.config = config or {}
-
+        self.guardrail_model = self.config.get("guardrail_model")
+        self.guardrail_provider = infer_provider(
+            self.config.get("guardrail_model", model_name),
+            self.config.get("guardrail_provider", "scaleway"),
+        )
+        self.guardrail_prompt = self.config.get(
+            "guardrail_prompt",
+            (
+                "You are a safety guardrail classifier. Return 'ALLOW' if the input is safe for a child-focused "
+                "education bot. Otherwise return 'BLOCK: <reason>'. Keep responses concise."
+            ),
+        )
         self._generator = None  # HF pipeline instance
         self._client: Optional[OpenAI] = None
-
+        self._guardrail_client: Optional[OpenAI] = None
     # ----------------------------
     # Local HF
     # ----------------------------
@@ -145,20 +156,37 @@ class ModelRunner:
 
         self._client = factory(self.config)
         return self._client
+    
+    def _get_guardrail_client(self) -> Optional[OpenAI]:
+        if not self.guardrail_model:
+            return None
 
+        if self._guardrail_client:
+            return self._guardrail_client
+
+        factory = PROVIDER_REGISTRY.get(self.guardrail_provider)
+        if not factory:
+            raise ValueError(f"Unsupported guardrail provider '{self.guardrail_provider}'.")
+
+        guardrail_config = dict(self.config)
+        guardrail_config.setdefault("model_name", self.guardrail_model)
+
+        self._guardrail_client = factory(guardrail_config)
+        return self._guardrail_client
+    
     def _run_openai_api(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
         client = self._get_client()
-
+        request_kwargs = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": self.config.get("temperature", 0.2),
+            "max_tokens": self.config.get("max_tokens", 256),
+        }
         try:
-            response = client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=self.config.get("temperature", 0.2),
-                max_tokens=self.config.get("max_tokens", 256),
-            )
+            response = client.chat.completions.create(**request_kwargs)
         except Exception as exc:
             return {"completion": "", "finish_reason": "error", "error": str(exc)}
 
@@ -167,7 +195,52 @@ class ModelRunner:
             "completion": content,
             "finish_reason": response.choices[0].finish_reason,
         }
+    
+    def _maybe_apply_guardrail(self, system_prompt: str, user_prompt: str) -> Optional[Dict[str, Any]]:
+        """
+        Run a guardrail model (via the OpenAI-compatible chat endpoint) before the
+        main model call. Guardrail models run on Scaleway by default and should
+        respond with either "ALLOW" or "BLOCK: <reason>".
+        """
 
+        if not self.guardrail_model:
+            return None
+
+        client = self._get_guardrail_client()
+        if not client:
+            return None
+
+        guardrail_request = {
+            "model": self.guardrail_model,
+            "messages": [
+                {"role": "system", "content": self.guardrail_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        "Evaluate if the following exchange is safe for an education bot aimed at children. "
+                        "Return ALLOW or BLOCK with a brief reason.\n\n"
+                        f"System prompt: {system_prompt}\nUser prompt: {user_prompt}"
+                    ),
+                },
+            ],
+            "temperature": 0,
+            "max_tokens": 64,
+        }
+
+        try:
+            response = client.chat.completions.create(**guardrail_request)
+        except Exception as exc:
+            return {"completion": "", "finish_reason": "guardrail_error", "error": str(exc)}
+
+        decision = (response.choices[0].message.content or "").strip()
+        if decision.upper().startswith("BLOCK"):
+            return {
+                "completion": "",
+                "finish_reason": "guardrail_blocked",
+                "guardrail_decision": decision,
+            }
+
+        return None
     # ----------------------------
     # Public API
     # ----------------------------
@@ -182,7 +255,12 @@ class ModelRunner:
         }
         """
         start = time.perf_counter()
-
+        
+        guardrail_result = self._maybe_apply_guardrail(system_prompt, user_prompt)
+        if guardrail_result is not None:
+            guardrail_result["latency"] = time.perf_counter() - start
+            return guardrail_result
+        
         if self.provider == "local_hf":
             result = self._run_local_hf(f"{system_prompt}\n\nUser: {user_prompt}\nAssistant:")
         elif self.provider in PROVIDER_REGISTRY:
