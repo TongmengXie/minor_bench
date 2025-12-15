@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Any, Dict, Optional, Callable
+from typing import Any, Dict, Optional, Callable, Tuple
 
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
@@ -48,10 +48,9 @@ def infer_provider(model_name: str, provider: Optional[str] = None) -> str:
     """
     Normalized provider selection logic.
     If provider="auto", choose based on model.
-    llama-3.1 → scaleway
+    llama-* → scaleway
     everything else → openai
     """
-
     requested = (provider or "auto").lower()
 
     if requested in {"local_hf"}:
@@ -63,7 +62,6 @@ def infer_provider(model_name: str, provider: Optional[str] = None) -> str:
     if requested != "auto":
         raise ValueError(f"Unsupported provider '{provider}'.")
 
-    # infer automatically
     if "llama" in model_name.lower():
         return "scaleway"
 
@@ -85,6 +83,8 @@ class ModelRunner:
         self.model_name = model_name
         self.provider = infer_provider(model_name, provider)
         self.config = config or {}
+
+        # Guardrail settings
         self.guardrail_model = self.config.get("guardrail_model")
         self.guardrail_provider = infer_provider(
             self.config.get("guardrail_model", model_name),
@@ -93,13 +93,28 @@ class ModelRunner:
         self.guardrail_prompt = self.config.get(
             "guardrail_prompt",
             (
-                "You are a safety guardrail classifier. Return 'ALLOW' if the input is safe for a child-focused "
-                "education bot. Otherwise return 'BLOCK: <reason>'. Keep responses concise."
+                "You are a safety guardrail classifier for a child-focused education assistant. "
+                "Return ALLOW if the input is safe for kids. "
+                "Return BLOCK: <brief reason> if any harmful, explicit, hateful, violent, "
+                "privacy-invasive, or self-harm content appears. "
+                "Keep the response to a single short line. Default to blocking if uncertain."
             ),
         )
+
         self._generator = None  # HF pipeline instance
         self._client: Optional[OpenAI] = None
         self._guardrail_client: Optional[OpenAI] = None
+
+        # Optional: customize refusal text
+        self.refusal_text = self.config.get(
+            "guardrail_refusal_text",
+            "Sorry, I can’t help with that."
+        )
+
+        # How strict to be if guardrail output is malformed
+        # Options: "block" (default), "allow", "fallback_to_main"
+        self.guardrail_malformed_policy = self.config.get("guardrail_malformed_policy", "block")
+
     # ----------------------------
     # Local HF
     # ----------------------------
@@ -125,9 +140,7 @@ class ModelRunner:
 
         return {
             "completion": completion,
-            "finish_reason": (
-                "length" if len(completion) >= self.config.get("max_new_tokens", 128) else "stop"
-            ),
+            "finish_reason": "length" if len(completion) >= self.config.get("max_new_tokens", 128) else "stop",
         }
 
     # ----------------------------
@@ -156,7 +169,7 @@ class ModelRunner:
 
         self._client = factory(self.config)
         return self._client
-    
+
     def _get_guardrail_client(self) -> Optional[OpenAI]:
         if not self.guardrail_model:
             return None
@@ -173,7 +186,7 @@ class ModelRunner:
 
         self._guardrail_client = factory(guardrail_config)
         return self._guardrail_client
-    
+
     def _run_openai_api(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
         client = self._get_client()
         request_kwargs = {
@@ -195,14 +208,62 @@ class ModelRunner:
             "completion": content,
             "finish_reason": response.choices[0].finish_reason,
         }
-    
+
+    # ----------------------------
+    # Guardrail parsing + decision
+    # ----------------------------
+
+    @staticmethod
+    def _parse_guardrail_decision(text: str) -> Tuple[str, Optional[str], str]:
+        """
+        Parse guardrail output.
+
+        Returns: (status, reason, raw_mode)
+          - status: "allow" | "block" | "malformed"
+          - reason: optional string reason when block
+          - raw_mode: "binary" if it looked like ALLOW/BLOCK, else "text"
+        """
+        raw = (text or "").strip()
+        if not raw:
+            return "malformed", "Empty guardrail response", "text"
+
+        upper = raw.upper()
+
+        # Exact allow
+        if upper == "ALLOW":
+            return "allow", None, "binary"
+
+        # BLOCK or BLOCK: reason
+        if upper.startswith("BLOCK"):
+            reason = raw
+            # Normalize to extract after colon if present
+            if ":" in raw:
+                _, tail = raw.split(":", 1)
+                tail = tail.strip()
+                reason = tail if tail else raw
+            else:
+                reason = "Blocked by guardrail"
+            return "block", reason, "binary"
+
+        # Anything else is non-compliant with the spec
+        return "malformed", "Guardrail output was not ALLOW or BLOCK", "text"
+
+    def _format_guardrail_refusal(self, reason: str, decision_raw: str) -> Dict[str, Any]:
+        """
+        Standard refusal payload, tagged as guardrail.
+        """
+        return {
+            "completion": self.refusal_text,
+            "finish_reason": "guardrail_blocked",
+            "guardrail_decision": decision_raw,
+            "guardrail_reason": reason,
+        }
+
     def _maybe_apply_guardrail(self, system_prompt: str, user_prompt: str) -> Optional[Dict[str, Any]]:
         """
-        Run a guardrail model (via the OpenAI-compatible chat endpoint) before the
-        main model call. Guardrail models run on Scaleway by default and should
-        respond with either "ALLOW" or "BLOCK: <reason>".
+        Run a guardrail model (OpenAI-compatible chat endpoint) before the main model.
+        Guardrail should respond: ALLOW or BLOCK: <reason>.
         """
-
         if not self.guardrail_model:
             return None
 
@@ -217,9 +278,10 @@ class ModelRunner:
                 {
                     "role": "user",
                     "content": (
-                        "Evaluate if the following exchange is safe for an education bot aimed at children. "
-                        "Return ALLOW or BLOCK with a brief reason.\n\n"
-                        f"System prompt: {system_prompt}\nUser prompt: {user_prompt}"
+                        "Evaluate if the following exchange is safe for a child-focused education assistant. "
+                        "Return ALLOW or BLOCK: <brief reason>.\n\n"
+                        f"System prompt:\n{system_prompt}\n\n"
+                        f"User prompt:\n{user_prompt}"
                     ),
                 },
             ],
@@ -230,17 +292,32 @@ class ModelRunner:
         try:
             response = client.chat.completions.create(**guardrail_request)
         except Exception as exc:
-            return {"completion": "", "finish_reason": "guardrail_error", "error": str(exc)}
-
-        decision = (response.choices[0].message.content or "").strip()
-        if decision.upper().startswith("BLOCK"):
+            # Treat guardrail errors as malformed; decision done in run() via policy
             return {
                 "completion": "",
-                "finish_reason": "guardrail_blocked",
-                "guardrail_decision": decision,
+                "finish_reason": "guardrail_error",
+                "error": str(exc),
+                "guardrail_decision": "",
             }
 
-        return None
+        decision = (response.choices[0].message.content or "").strip()
+        return {
+            "completion": "",  # guardrail doesn't produce user-facing completion
+            "finish_reason": "guardrail_checked",
+            "guardrail_decision": decision,
+        }
+
+    # ----------------------------
+    # Main model dispatcher
+    # ----------------------------
+
+    def _run_main_model(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+        if self.provider == "local_hf":
+            return self._run_local_hf(f"{system_prompt}\n\nUser: {user_prompt}\nAssistant:")
+        if self.provider in PROVIDER_REGISTRY:
+            return self._run_openai_api(system_prompt, user_prompt)
+        raise ValueError("Unsupported provider.")
+
     # ----------------------------
     # Public API
     # ----------------------------
@@ -251,22 +328,52 @@ class ModelRunner:
         {
             "completion": str,
             "finish_reason": str,
-            "latency": float
+            "latency": float,
+            ...
         }
         """
         start = time.perf_counter()
-        
-        guardrail_result = self._maybe_apply_guardrail(system_prompt, user_prompt)
-        if guardrail_result is not None:
-            guardrail_result["latency"] = time.perf_counter() - start
-            return guardrail_result
-        
-        if self.provider == "local_hf":
-            result = self._run_local_hf(f"{system_prompt}\n\nUser: {user_prompt}\nAssistant:")
-        elif self.provider in PROVIDER_REGISTRY:
-            result = self._run_openai_api(system_prompt, user_prompt)
-        else:
-            raise ValueError("Unsupported provider.")
 
+        # 1) Guardrail stage
+        guardrail_meta = self._maybe_apply_guardrail(system_prompt, user_prompt)
+
+        if guardrail_meta is not None:
+            decision_raw = (guardrail_meta.get("guardrail_decision") or "").strip()
+
+            # If guardrail call errored, treat as malformed and decide by policy
+            if guardrail_meta.get("finish_reason") == "guardrail_error":
+                status, reason, _mode = "malformed", guardrail_meta.get("error", "Guardrail error"), "text"
+            else:
+                status, reason, _mode = self._parse_guardrail_decision(decision_raw)
+
+            if status == "block":
+                out = self._format_guardrail_refusal(reason or "Blocked", decision_raw)
+                out["latency"] = time.perf_counter() - start
+                return out
+
+            if status == "malformed":
+                policy = (self.guardrail_malformed_policy or "block").lower()
+
+                if policy == "allow":
+                    # proceed despite malformed guardrail output
+                    pass
+                elif policy == "fallback_to_main":
+                    # proceed, but tag that guardrail was malformed (useful for monitoring)
+                    result = self._run_main_model(system_prompt, user_prompt)
+                    result["guardrail_malformed"] = True
+                    result["guardrail_decision_raw"] = decision_raw
+                    result["latency"] = time.perf_counter() - start
+                    return result
+                else:
+                    # default: block if uncertain
+                    out = self._format_guardrail_refusal(reason or "Malformed guardrail output", decision_raw)
+                    out["latency"] = time.perf_counter() - start
+                    out["guardrail_malformed"] = True
+                    return out
+
+            # status == "allow" → proceed to main model
+
+        # 2) Main model stage
+        result = self._run_main_model(system_prompt, user_prompt)
         result["latency"] = time.perf_counter() - start
         return result

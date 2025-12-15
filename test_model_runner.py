@@ -15,7 +15,7 @@ def main():
         # model_name="gpt-4o-mini",
         model_name="llama-3.1-8b-instruct",
         provider="auto",  # or "auto"
-        config={"api_key": SCW_SECRET_KEY}  # or use env OPENAI_API_KEY / SCW_SECRET_KEY
+        config={"api_key": SCW_SECRET_KEY, "guardrail_model":"ibm-granite/granite-guardian-hap-38m"}  # or use env OPENAI_API_KEY / SCW_SECRET_KEY
     )
     print(f"provider: {runner.provider}")
     system_prompt = "You are a helpful assistant."
