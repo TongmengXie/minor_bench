@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Any, Dict, Optional, Callable, Tuple
+from typing import Any, Dict, Optional, Callable, Tuple, List
 
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
@@ -39,6 +39,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderFactory] = {
     "scaleway": _build_scaleway_client,
 }
 
+# Prefer guarded models that are easy to load locally
+DEFAULT_LOCAL_GUARDRAIL_MODELS: List[str] = [
+    "ibm-granite/granite-guardian-3.2-3b-a800m",
+    "ibm-granite/granite-guardian-3.3-8b",
+    "nvidia/llama-3.1-nemoguard-8b-content-safety",
+]
+
 
 # ------------------------------------------------------------
 # Provider inference
@@ -62,8 +69,8 @@ def infer_provider(model_name: str, provider: Optional[str] = None) -> str:
     if requested != "auto":
         raise ValueError(f"Unsupported provider '{provider}'.")
 
-    if "llama" in model_name.lower():
-        return "scaleway"
+    if model_name in DEFAULT_LOCAL_GUARDRAIL_MODELS:
+        return "local_hf"
 
     return "openai"
 
@@ -90,6 +97,17 @@ class ModelRunner:
             self.config.get("guardrail_model", model_name),
             self.config.get("guardrail_provider", "scaleway"),
         )
+
+        self.local_guardrail_models = self.config.get(
+            "local_guardrail_models", DEFAULT_LOCAL_GUARDRAIL_MODELS
+        )
+
+        if self.guardrail_provider == "local_hf" and not self.guardrail_model:
+            if not self.local_guardrail_models:
+                raise RuntimeError("No local guardrail models configured")
+
+            self.guardrail_model = self.local_guardrail_models[0]
+        
         self.guardrail_prompt = self.config.get(
             "guardrail_prompt",
             (
@@ -102,6 +120,7 @@ class ModelRunner:
         )
 
         self._generator = None  # HF pipeline instance
+        self._guardrail_generator = None # Local HF guardrail pipeline
         self._client: Optional[OpenAI] = None
         self._guardrail_client: Optional[OpenAI] = None
 
@@ -143,6 +162,69 @@ class ModelRunner:
             "finish_reason": "length" if len(completion) >= self.config.get("max_new_tokens", 128) else "stop",
         }
 
+    def _init_local_guardrail_hf(self) -> None:
+        if self._guardrail_generator is not None:
+            return
+
+        if not self.guardrail_model:
+            raise RuntimeError("Guardrail model must be set for local_hf guardrail provider")
+
+        try:
+            from transformers import pipeline
+        except ImportError as exc:
+            raise ImportError("Transformers must be installed for local_hf guardrails.") from exc
+
+        generation_kwargs = {"model": self.guardrail_model}
+        generation_kwargs.update(self.config.get("guardrail_generation_kwargs", {}))
+
+        # Most HF guardrail models are decoder-only and require trusted code to run
+        generation_kwargs.setdefault("trust_remote_code", True)
+
+        self._guardrail_generator = pipeline(
+            "text-generation",
+            **generation_kwargs,
+        )
+
+    def _run_local_guardrail_hf(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+        try:
+            self._init_local_guardrail_hf()
+        except Exception as exc:  # pragma: no cover - defensive for guardrail init failures
+            return {
+                "completion": "",
+                "finish_reason": "guardrail_init_error",
+                "error": str(exc),
+                "guardrail_decision": "",
+            }
+
+        decision_prompt = (
+            f"{self.guardrail_prompt}\n\n"
+            "Evaluate if the following exchange is safe for a child-focused education assistant. "
+            "Return ALLOW or BLOCK: <brief reason>.\n\n"
+            f"System prompt:\n{system_prompt}\n\n"
+            f"User prompt:\n{user_prompt}\n"
+            "Decision:"
+        )
+
+        try:
+            outputs = self._guardrail_generator(
+                decision_prompt,
+                max_new_tokens=self.config.get("guardrail_max_new_tokens", 64),
+            )
+        except Exception as exc:  # pragma: no cover - defensive for guardrail inference failures
+            return {
+                "completion": "",
+                "finish_reason": "guardrail_inference_error",
+                "error": str(exc),
+                "guardrail_decision": "",
+            }
+
+        decision = outputs[0].get("generated_text", "").replace(decision_prompt, "", 1).strip()
+
+        return {
+            "completion": "",
+            "finish_reason": "guardrail_checked",
+            "guardrail_decision": decision,
+        }
     # ----------------------------
     # API clients
     # ----------------------------
@@ -176,6 +258,9 @@ class ModelRunner:
 
         if self._guardrail_client:
             return self._guardrail_client
+
+        if self.guardrail_provider == "local_hf":
+            return None
 
         factory = PROVIDER_REGISTRY.get(self.guardrail_provider)
         if not factory:
@@ -267,6 +352,9 @@ class ModelRunner:
         if not self.guardrail_model:
             return None
 
+        if self.guardrail_provider == "local_hf":
+            return self._run_local_guardrail_hf(system_prompt, user_prompt)
+
         client = self._get_guardrail_client()
         if not client:
             return None
@@ -295,7 +383,7 @@ class ModelRunner:
             # Treat guardrail errors as malformed; decision done in run() via policy
             return {
                 "completion": "",
-                "finish_reason": "guardrail_error",
+                "finish_reason": "guardrail_malformed_error",
                 "error": str(exc),
                 "guardrail_decision": "",
             }
@@ -341,7 +429,8 @@ class ModelRunner:
             decision_raw = (guardrail_meta.get("guardrail_decision") or "").strip()
 
             # If guardrail call errored, treat as malformed and decide by policy
-            if guardrail_meta.get("finish_reason") == "guardrail_error":
+            finish = (guardrail_meta.get("finish_reason") or "").lower()
+            if finish.startswith("guardrail_") and "error" in finish:
                 status, reason, _mode = "malformed", guardrail_meta.get("error", "Guardrail error"), "text"
             else:
                 status, reason, _mode = self._parse_guardrail_decision(decision_raw)

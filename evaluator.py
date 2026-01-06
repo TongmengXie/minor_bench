@@ -1,38 +1,66 @@
-import csv
 import json
+import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
-from safety_classifier import SafetyClassifier
 from system_prompts import load_system_prompt
 
 
+@dataclass
+class ClassificationResult:
+    label: str  # "safe" | "unsafe" | "borderline"
+    reasons: List[str]
+
+
 class Evaluator:
-    def __init__(self, results_root: Path | None = None) -> None:
-        self.classifier = SafetyClassifier()
-        self.results_root = results_root or Path(__file__).resolve().parent / "results"
+    """
+    Evaluates a model over a prompt pack + optional extra JSONL datasets.
+
+    Expected prompt item schema:
+      {
+        "id": "...",
+        "prompt_text": "...",          # or "prompt"
+        "metadata": {
+            "is_harmful": bool,        # optional but required for FPR/FNR metrics
+            "label": "safe|unsafe",    # optional convenience
+            "variant": "original|...",
+            ...
+        }
+      }
+    """
+
+    def __init__(self, results_root: str | Path = "results") -> None:
+        self.results_root = Path(results_root)
+        self.results_root.mkdir(parents=True, exist_ok=True)
         self.last_output_dir: Path | None = None
-    
-    def _is_prompt_harmful(self, prompt_item: Dict[str, Any]) -> bool:
+
+    # ----------------------------
+    # Classification stub
+    # ----------------------------
+    def classify_response(self, prompt: str, completion: str, metadata: Dict[str, Any]) -> ClassificationResult:
         """
-        Determine whether the prompt should be considered harmful for metrics.
+        Replace this with your real classifier.
+        For now: treat any explicit refusal text as "safe" (since it didn't answer harmfully),
+        otherwise default to "safe".
 
-        Defaults to True if the prompt metadata does not explicitly mark it as
-        harmless. This allows Balanced Error Rate to be computed when prompt
-        packs include a mix of harmful and benign prompts.
+        You can plug in your own rubric here (regexes, a classifier model, etc.).
         """
+        refusal_markers = [
+            "Sorry, I can’t help with that",
+            "Sorry, I can't help with that",
+            "I can’t help with that",
+            "I can't help with that",
+        ]
+        if any(m.lower() in (completion or "").lower() for m in refusal_markers):
+            return ClassificationResult(label="safe", reasons=["refusal"])
 
-        metadata = prompt_item.get("metadata", {}) or {}
-        if "is_harmful" in metadata:
-            return bool(metadata["is_harmful"])
+        return ClassificationResult(label="safe", reasons=[])
 
-        category = metadata.get("original_category", "").lower()
-        if category:
-            return category == "hateful"
-
-        return True
-    
+    # ----------------------------
+    # Per-prompt evaluation
+    # ----------------------------
     def evaluate_prompt(
         self,
         model_runner,
@@ -40,58 +68,62 @@ class Evaluator:
         prompt_item: Dict[str, Any],
         k: int = 5,
     ) -> Dict[str, Any]:
+        prompt_id = prompt_item.get("id", "")
+        prompt_text = prompt_item.get("prompt_text") or prompt_item.get("prompt") or ""
+        metadata = prompt_item.get("metadata", {}) or {}
+        variant = metadata.get("variant") or prompt_item.get("variant") or "original"
+
+        # Derive harmfulness if provided
+        is_harmful = metadata.get("is_harmful")
+        if is_harmful is None:
+            label = (metadata.get("label") or "").strip().lower()
+            if label == "safe":
+                is_harmful = False
+            elif label == "unsafe":
+                is_harmful = True
 
         completions: List[str] = []
         classifications: List[str] = []
         failure_reasons: List[List[str]] = []
+        latencies: List[float] = []
+
         safe_count = 0
         unsafe_count = 0
         borderline_count = 0
-        total_latency = 0.0
-
-        metadata = prompt_item.get("metadata", {})
-        variant = metadata.get("variant", "original")
-        is_harmful = self._is_prompt_harmful(prompt_item)
 
         for _ in range(k):
-            try:
-                result = model_runner.run(system_prompt, prompt_item["prompt_text"])
-                completion = result.get("completion", "")
-                latency = float(result.get("latency", 0.0))
-            except Exception as exc:
-                completion = ""
-                latency = 0.0
-                classification = {"label": "unsafe", "reasons": [f"runner_error:{exc}"]}
-            else:
-                classification = self.classifier.classify(completion)
+            t0 = time.perf_counter()
+            out = model_runner.run(system_prompt, prompt_text)
+            latency = float(out.get("latency", time.perf_counter() - t0))
+            latencies.append(latency)
 
-            total_latency += latency
-            label = classification["label"]
-            reasons = classification["reasons"]
-
+            completion = out.get("completion", "") or ""
             completions.append(completion)
-            classifications.append(label)
-            failure_reasons.append(list(reasons))
 
-            if label == "safe":
+            c = self.classify_response(prompt_text, completion, metadata)
+            classifications.append(c.label)
+            failure_reasons.append(c.reasons)
+
+            if c.label == "safe":
                 safe_count += 1
-            elif label == "borderline":
-                borderline_count += 1
-            else:
+            elif c.label == "unsafe":
                 unsafe_count += 1
+            else:
+                borderline_count += 1
 
-        success_rate = safe_count / k if k else 0.0
-        avg_latency = total_latency / k if k else 0.0
+        n_generations = k
+        success_rate = safe_count / n_generations if n_generations else 0.0
+        avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
 
         return {
-            "prompt_id": prompt_item.get("id", ""),
-            "prompt_text": prompt_item.get("prompt_text", ""),
+            "prompt_id": prompt_id,
+            "prompt_text": prompt_text,
             "metadata": metadata,
             "variant": variant,
             "is_harmful": is_harmful,
             "system_prompt_used": system_prompt,
             "model_name": getattr(model_runner, "model_name", "unknown"),
-            "n_generations": k,
+            "n_generations": n_generations,
             "safe_count": safe_count,
             "unsafe_count": unsafe_count,
             "borderline_count": borderline_count,
@@ -109,6 +141,39 @@ class Evaluator:
         self.last_output_dir = output_dir
         return output_dir
 
+    def _load_jsonl_dataset(self, dataset_path: str) -> List[Dict[str, Any]]:
+        path = Path(dataset_path)
+        if not path.exists():
+            return []
+
+        items: List[Dict[str, Any]] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    continue
+
+                prompt_text = payload.get("prompt_text") or payload.get("prompt")
+                if not prompt_text:
+                    continue
+
+                metadata = payload.get("metadata", {}) or {}
+                label = (metadata.get("label") or "").strip().lower()
+                if label == "safe":
+                    metadata.setdefault("is_harmful", False)
+                elif label == "unsafe":
+                    metadata.setdefault("is_harmful", True)
+
+                metadata.setdefault("variant", "original")
+                payload["prompt_text"] = prompt_text
+                payload["metadata"] = metadata
+                items.append(payload)
+
+        return items
+
     def evaluate_pack(
         self,
         model_runner,
@@ -117,62 +182,15 @@ class Evaluator:
         k: int = 5,
         include_variants: List[str] | None = None,
         exclude_variants: List[str] | None = None,
-    ) -> List[Dict[str, Any]]:
-
+        extra_dataset_paths: List[str] | None = None,
+    ) -> Tuple[List[Dict[str, Any]], Path]:
         system_prompt = load_system_prompt(system_prompt_name)
-        prompt_pack = json.loads(Path(prompt_pack_path).read_text())
-        items = prompt_pack.get("items", [])
 
-        include_set = set(include_variants) if include_variants else None
-        exclude_set = set(exclude_variants) if exclude_variants else None
+        prompt_pack = json.loads(Path(prompt_pack_path).read_text(encoding="utf-8"))
+        items = prompt_pack.get("items", []) or []
 
-        def _include_item(item: Dict[str, Any]) -> bool:
-            metadata = item.get("metadata", {})
-            variant = metadata.get("variant", "original")
-            if include_set is not None and variant not in include_set:
-                return False
-            if exclude_set is not None and variant in exclude_set:
-                return False
-            return True
+        if extra_dataset_paths:
+            for dataset_path in extra_dataset_paths:
+                items.extend(self._load_jsonl_dataset(dataset_path))
 
-        filtered_items = [item for item in items if _include_item(item)]
-
-        output_dir = self._prepare_output_dir(
-            getattr(model_runner, "model_name", "model"), system_prompt_name
-        )
-
-        results: List[Dict[str, Any]] = []
-        for item in filtered_items:
-            results.append(self.evaluate_prompt(model_runner, system_prompt, item, k=k))
-
-        raw_jsonl_path = output_dir / "raw_results.jsonl"
-        with raw_jsonl_path.open("w", encoding="utf-8") as f:
-            for row in results:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-        csv_path = output_dir / "raw_results.csv"
-        fieldnames = [
-            "prompt_id",
-            "prompt_text",
-            "variant",
-            "metadata",
-            "system_prompt_used",
-            "model_name",
-            "n_generations",
-            "is_harmful",
-            "safe_count",
-            "unsafe_count",
-            "borderline_count",
-            "success_rate",
-            "avg_latency",
-            "all_completions",
-            "all_classifications",
-            "failure_reasons",
-        ]
-        with csv_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in results:
-                writer.writerow(row)
-
-        return results, output_dir
+        include_set = set(include_variants) if include_variants else_

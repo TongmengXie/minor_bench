@@ -1,3 +1,4 @@
+# run_eval.py
 import argparse
 import sys
 from pathlib import Path
@@ -28,26 +29,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--system_prompt_name", required=True)
     parser.add_argument("--prompt_pack_path", required=True)
 
+    parser.add_argument(
+        "--extra_dataset_paths",
+        type=str,
+        default="datasets/true_negative_safe_sensitive.jsonl",
+        help="Comma-separated list of JSONL datasets to include alongside the prompt pack. "
+             "Use 'None' to disable.",
+    )
+
     parser.add_argument("--k", type=int, default=5, help="Generations per prompt")
 
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Optional JSON config string",
-    )
-    parser.add_argument(
-        "--guardrail_model",
-        type=str,
-        default=None,
-        help="Optional guardrail model name (e.g., IBM/NVIDIA guardrail model on Scaleway)",
-    )
+    parser.add_argument("--config", type=str, default=None, help="Optional JSON config string")
+    parser.add_argument("--guardrail_model", type=str, default=None, help="Optional guardrail model name")
     parser.add_argument(
         "--guardrail_provider",
         type=str,
         default="scaleway",
-        choices=["openai", "openai_api", "scaleway", "auto"],
-        help="Provider used for the guardrail model (defaults to Scaleway)",
+        choices=["openai", "openai_api", "scaleway", "auto", "local_hf"],
+        help="Provider used for the guardrail model (defaults to scaleway).",
     )
     parser.add_argument(
         "--guardrail_prompt",
@@ -67,6 +66,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Comma-separated list of prompt variants to exclude (e.g., camouflage,adversarial)",
     )
+
     return parser.parse_args()
 
 
@@ -77,14 +77,25 @@ def main() -> None:
     if args.config:
         import json
         config = json.loads(args.config)
+
     if args.guardrail_model:
         config["guardrail_model"] = args.guardrail_model
     if args.guardrail_provider:
         config["guardrail_provider"] = args.guardrail_provider
     if args.guardrail_prompt:
         config["guardrail_prompt"] = args.guardrail_prompt
+
     include_variants = args.include_variants.split(",") if args.include_variants else None
     exclude_variants = args.exclude_variants.split(",") if args.exclude_variants else None
+
+    extra_dataset_paths = None
+    if args.extra_dataset_paths:
+        extra_dataset_paths = [
+            p.strip()
+            for p in args.extra_dataset_paths.split(",")
+            if p.strip() and p.strip().lower() != "none"
+        ]
+
     model_runner = ModelRunner(args.model_name, args.provider, config=config)
     evaluator = Evaluator()
 
@@ -94,11 +105,12 @@ def main() -> None:
         prompt_pack_path=args.prompt_pack_path,
         k=args.k,
         include_variants=include_variants,
-        exclude_variants=exclude_variants
+        exclude_variants=exclude_variants,
+        extra_dataset_paths=extra_dataset_paths,
     )
 
     ReportGenerator(output_dir=output_dir).generate(results)
-    print("Evaluation completed.")
+    print(f"Evaluation completed. Output: {output_dir}")
 
 
 if __name__ == "__main__":
