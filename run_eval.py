@@ -1,12 +1,5 @@
-# run_eval.py
 import argparse
-import sys
-from pathlib import Path
-
-# Ensure local imports work correctly
-CURRENT_DIR = Path(__file__).resolve().parent
-if str(CURRENT_DIR) not in sys.path:
-    sys.path.append(str(CURRENT_DIR))
+import json
 
 from evaluator import Evaluator
 from model_runner import ModelRunner
@@ -38,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--k", type=int, default=5, help="Generations per prompt")
+    parser.add_argument("--batch_size", type=int, default=10, help="Prompts per evaluation batch")
 
     parser.add_argument("--config", type=str, default=None, help="Optional JSON config string")
     parser.add_argument("--guardrail_model", type=str, default=None, help="Optional guardrail model name")
@@ -64,7 +58,7 @@ def parse_args() -> argparse.Namespace:
         "--exclude_variants",
         type=str,
         default=None,
-        help="Comma-separated list of prompt variants to exclude (e.g., camouflage,adversarial)",
+        help="Comma-separated list of prompt variants to exclude",
     )
 
     return parser.parse_args()
@@ -75,7 +69,6 @@ def main() -> None:
 
     config = {}
     if args.config:
-        import json
         config = json.loads(args.config)
 
     if args.guardrail_model:
@@ -104,6 +97,7 @@ def main() -> None:
         system_prompt_name=args.system_prompt_name,
         prompt_pack_path=args.prompt_pack_path,
         k=args.k,
+        batch_size=args.batch_size,
         include_variants=include_variants,
         exclude_variants=exclude_variants,
         extra_dataset_paths=extra_dataset_paths,

@@ -1,3 +1,16 @@
+import os
+import sys
+from pathlib import Path
+
+import pytest
+from dotenv import find_dotenv, load_dotenv
+
+# Ensure local imports work when running this file directly.
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
 from types import SimpleNamespace
 
 import pytest

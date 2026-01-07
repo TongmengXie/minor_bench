@@ -1,6 +1,19 @@
+import os
+import sys
+from pathlib import Path
+
+import pytest
+from dotenv import find_dotenv, load_dotenv
+
+# Ensure local imports work when running this file directly.
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
 from model_runner import ModelRunner
 from dotenv import find_dotenv, load_dotenv
-import os
+
 load_dotenv(find_dotenv())
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 SCW_SECRET_KEY = os.getenv('SCW_SECRET_KEY')

@@ -1,4 +1,3 @@
-# test_model_runner.py
 import os
 import sys
 from pathlib import Path
