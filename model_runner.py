@@ -421,6 +421,9 @@ class ModelRunner:
         }
         """
         start = time.perf_counter()
+        guardrail_model = self.guardrail_model
+        guardrail_provider = self.guardrail_provider if guardrail_model else None
+        guardrail_decision_status: Optional[str] = None
 
         # 1) Guardrail stage
         guardrail_meta = self._maybe_apply_guardrail(system_prompt, user_prompt)
@@ -435,8 +438,13 @@ class ModelRunner:
             else:
                 status, reason, _mode = self._parse_guardrail_decision(decision_raw)
 
+            guardrail_decision_status = status
             if status == "block":
+                
                 out = self._format_guardrail_refusal(reason or "Blocked", decision_raw)
+                out["guardrail_model"] = guardrail_model
+                out["guardrail_provider"] = guardrail_provider
+                out["guardrail_decision_status"] = "block"
                 out["latency"] = time.perf_counter() - start
                 return out
 
@@ -445,12 +453,16 @@ class ModelRunner:
 
                 if policy == "allow":
                     # proceed despite malformed guardrail output
+                    guardrail_decision_status = "malformed"
                     pass
                 elif policy == "fallback_to_main":
                     # proceed, but tag that guardrail was malformed (useful for monitoring)
                     result = self._run_main_model(system_prompt, user_prompt)
                     result["guardrail_malformed"] = True
                     result["guardrail_decision_raw"] = decision_raw
+                    result["guardrail_model"] = guardrail_model
+                    result["guardrail_provider"] = guardrail_provider
+                    result["guardrail_decision_status"] = "malformed"
                     result["latency"] = time.perf_counter() - start
                     return result
                 else:
@@ -458,11 +470,18 @@ class ModelRunner:
                     out = self._format_guardrail_refusal(reason or "Malformed guardrail output", decision_raw)
                     out["latency"] = time.perf_counter() - start
                     out["guardrail_malformed"] = True
+                    out["guardrail_model"] = guardrail_model
+                    out["guardrail_provider"] = guardrail_provider
+                    out["guardrail_decision_status"] = "malformed"
                     return out
 
             # status == "allow" → proceed to main model
 
         # 2) Main model stage
         result = self._run_main_model(system_prompt, user_prompt)
+        if guardrail_meta is not None:
+            result["guardrail_decision_status"] = guardrail_decision_status or "allow"
+        result["guardrail_model"] = guardrail_model
+        result["guardrail_provider"] = guardrail_provider
         result["latency"] = time.perf_counter() - start
         return result

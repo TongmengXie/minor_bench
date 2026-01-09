@@ -126,6 +126,10 @@ class Evaluator:
         metadata.setdefault("variant", variant)
 
         generations: List[Dict[str, Any]] = []
+        guardrail_decisions: List[Dict[str, Any]] = []
+        guardrail_model = getattr(model_runner, "guardrail_model", None)
+        guardrail_provider = getattr(model_runner, "guardrail_provider", None)
+        model_name = getattr(model_runner, "model_name", None)
         for i in range(k):
             raw = self._call_model_runner(model_runner, system_prompt, prompt_text)
 
@@ -133,13 +137,34 @@ class Evaluator:
             if isinstance(raw, dict):
                 text = raw.get("text") or raw.get("output") or raw.get("content") or str(raw)
                 generations.append({"index": i, "text": text, "raw": raw})
+                decision_status = raw.get("guardrail_decision_status")
+                guardrail_decisions.append(
+                    {
+                        "index": i,
+                        "status": decision_status,
+                        "guardrail_model": raw.get("guardrail_model", guardrail_model),
+                        "guardrail_provider": raw.get("guardrail_provider", guardrail_provider),
+                    }
+                )
             else:
                 generations.append({"index": i, "text": str(raw), "raw": raw})
+                guardrail_decisions.append(
+                    {
+                        "index": i,
+                        "status": None,
+                        "guardrail_model": guardrail_model,
+                        "guardrail_provider": guardrail_provider,
+                    }
+                )
 
         return {
             "prompt_text": prompt_text,
             "metadata": metadata,
             "generations": generations,
+            "model_name": model_name,
+            "guardrail_model": guardrail_model,
+            "guardrail_provider": guardrail_provider,
+            "guardrail_decisions": guardrail_decisions,
         }
 
     def evaluate_pack(

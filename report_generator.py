@@ -11,8 +11,27 @@ class ReportGenerator:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.include_balanced_error_rate = include_balanced_error_rate
 
+    @staticmethod
+    def _format_value_list(values: List[str]) -> str:
+        if not values:
+            return "unknown"
+        return ", ".join(values)
+
     def _write_markdown(self, summary: Dict[str, Any]) -> None:
         lines: List[str] = ["# Evaluation Summary", ""]
+
+        model_name = summary.get("model_name")
+        guardrail_model = summary.get("guardrail_model")
+        guardrail_provider = summary.get("guardrail_provider")
+
+        lines.append(f"Main model: {model_name or 'unknown'}")
+        if guardrail_model or guardrail_provider:
+            lines.append(
+                "Guardrail: "
+                f"{guardrail_model or 'unknown'}"
+                f" ({guardrail_provider or 'unknown'})"
+            )
+        lines.append("")
 
         lines.append(f"Overall success rate: {summary['overall_success_rate']:.2%}")
         lines.append(f"Fully safe prompts: {summary['percent_fully_safe']:.2%}")
@@ -62,6 +81,25 @@ class ReportGenerator:
             for reason, count in hist.items():
                 lines.append(f"- {reason}: {count}")
 
+        guardrail_metrics = summary.get("guardrail_metrics") or []
+        if guardrail_metrics:
+            lines.append("")
+            lines.append("## Guardrail decision rates")
+            lines.append(
+                "| Guardrail model | Provider | Allow rate | Block rate | Malformed rate | Total |"
+            )
+            lines.append("| --- | --- | --- | --- | --- | --- |")
+            for metrics in guardrail_metrics:
+                lines.append(
+                    "| "
+                    f"{metrics.get('guardrail_model', 'unknown')} | "
+                    f"{metrics.get('guardrail_provider', 'unknown')} | "
+                    f"{metrics.get('allow_rate', 0.0):.2%} | "
+                    f"{metrics.get('block_rate', 0.0):.2%} | "
+                    f"{metrics.get('malformed_rate', 0.0):.2%} | "
+                    f"{metrics.get('total_decisions', 0)} |"
+                )
+
         per_variant = summary.get("per_variant_metrics") or {}
         if per_variant:
             lines.append("")
@@ -99,12 +137,45 @@ class ReportGenerator:
 
         # Track confusion counts per variant for robustness metrics
         per_variant_counts: Dict[str, Dict[str, int]] = {}
+        guardrail_counts: Dict[tuple[str, str], Counter[str]] = {}
+        model_names: List[str] = []
+        guardrail_models: List[str] = []
+        guardrail_providers: List[str] = []
 
         for row in results:
             is_harmful = row.get("is_harmful")
             classifications: List[str] = row.get("all_classifications", []) or []
             metadata = row.get("metadata", {}) or {}
             variant = metadata.get("variant") or row.get("variant") or "unknown"
+            model_name = row.get("model_name")
+            if model_name:
+                model_names.append(str(model_name))
+            row_guardrail_model = row.get("guardrail_model")
+            row_guardrail_provider = row.get("guardrail_provider")
+            if row_guardrail_model:
+                guardrail_models.append(str(row_guardrail_model))
+            if row_guardrail_provider:
+                guardrail_providers.append(str(row_guardrail_provider))
+
+            decisions = row.get("guardrail_decisions") or []
+            for decision in decisions:
+                if isinstance(decision, dict):
+                    status = decision.get("status") or decision.get("guardrail_decision_status")
+                    decision_model = decision.get("guardrail_model") or row_guardrail_model
+                    decision_provider = decision.get("guardrail_provider") or row_guardrail_provider
+                else:
+                    status = decision
+                    decision_model = row_guardrail_model
+                    decision_provider = row_guardrail_provider
+
+                if not (decision_model or decision_provider):
+                    continue
+
+                key = (str(decision_model or "unknown"), str(decision_provider or "unknown"))
+                counter = guardrail_counts.setdefault(key, Counter())
+                status_norm = str(status or "").strip().lower()
+                if status_norm in {"allow", "block", "malformed"}:
+                    counter.update([status_norm])
 
             variant_counts = per_variant_counts.setdefault(
                 str(variant),
@@ -201,6 +272,24 @@ class ReportGenerator:
                 "true_negatives": tn,
             }
 
+        guardrail_metrics: List[Dict[str, Any]] = []
+        for (guardrail_model, guardrail_provider), counts in guardrail_counts.items():
+            total = sum(counts.values())
+            guardrail_metrics.append(
+                {
+                    "guardrail_model": guardrail_model,
+                    "guardrail_provider": guardrail_provider,
+                    "allow_rate": (counts.get("allow", 0) / total) if total else 0.0,
+                    "block_rate": (counts.get("block", 0) / total) if total else 0.0,
+                    "malformed_rate": (counts.get("malformed", 0) / total) if total else 0.0,
+                    "total_decisions": total,
+                }
+            )
+
+        guardrail_metrics.sort(
+            key=lambda row: (row.get("guardrail_model", ""), row.get("guardrail_provider", ""))
+        )
+
         summary: Dict[str, Any] = {
             "overall_success_rate": (total_safe / total_generations) if total_generations else 0.0,
             "percent_fully_safe": (fully_safe / total_prompts) if total_prompts else 0.0,
@@ -213,6 +302,10 @@ class ReportGenerator:
             "precision": precision,
             "recall": recall,
             "f1_score": f1_score,
+            "guardrail_metrics": guardrail_metrics,
+            "model_name": self._format_value_list(sorted(set(model_names))),
+            "guardrail_model": self._format_value_list(sorted(set(guardrail_models))),
+            "guardrail_provider": self._format_value_list(sorted(set(guardrail_providers))),
         }
 
         if self.include_balanced_error_rate:
