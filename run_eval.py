@@ -102,7 +102,7 @@ def main() -> None:
         exclude_variants=exclude_variants,
         extra_dataset_paths=extra_dataset_paths,
     )
-
+    results = evaluator.annotate_with_safety(results, SafetyClassifier())
     ReportGenerator(output_dir=output_dir).generate(results)
     print(f"Evaluation completed. Output: {output_dir}")
 

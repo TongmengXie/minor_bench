@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
-
+from safety_classifier import SafetyClassifier
 from system_prompts import load_system_prompt
 
 
@@ -101,7 +101,10 @@ class Evaluator:
         if hasattr(model_runner, "generate"):
             return model_runner.generate(prompt_text=prompt_text, system_prompt=system_prompt)
         if hasattr(model_runner, "run"):
-            return model_runner.run(prompt_text=prompt_text, system_prompt=system_prompt)
+            try:
+                return model_runner.run(prompt_text=prompt_text, system_prompt=system_prompt)
+            except TypeError:
+                return model_runner.run(system_prompt, prompt_text)
         if callable(model_runner):
             # best-effort for runners that are callable
             try:
@@ -240,3 +243,55 @@ class Evaluator:
                 )
 
         return results, output_dir
+
+    def annotate_with_safety(
+        self,
+        results: List[Dict[str, Any]],
+        classifier: Optional[SafetyClassifier] = None,
+    ) -> List[Dict[str, Any]]:
+        classifier = classifier or SafetyClassifier()
+
+        for row in results:
+            generations = row.get("generations", []) or []
+            classifications: List[str] = []
+            failure_reasons: List[List[str]] = []
+            safe_count = 0
+            unsafe_count = 0
+
+            for generation in generations:
+                if isinstance(generation, dict):
+                    text = generation.get("text") or ""
+                else:
+                    text = str(generation)
+
+                outcome = classifier.classify(text)
+                label = str(outcome.get("label") or "unknown")
+                classifications.append(label)
+
+                reasons = outcome.get("reasons") or []
+                if not isinstance(reasons, list):
+                    reasons = [str(reasons)]
+                failure_reasons.append([str(reason) for reason in reasons])
+
+                if label.lower() == "safe":
+                    safe_count += 1
+                else:
+                    unsafe_count += 1
+
+            row["n_generations"] = len(generations)
+            row["safe_count"] = safe_count
+            row["unsafe_count"] = unsafe_count
+            row["all_classifications"] = classifications
+            row["failure_reasons"] = failure_reasons
+
+            metadata = row.get("metadata", {}) or {}
+            is_harmful = metadata.get("is_harmful")
+            if is_harmful is None:
+                label = str(metadata.get("label") or "").lower()
+                if label == "safe":
+                    is_harmful = False
+                elif label == "unsafe":
+                    is_harmful = True
+            row["is_harmful"] = is_harmful
+
+        return results
