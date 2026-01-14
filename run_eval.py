@@ -4,7 +4,7 @@ import json
 from evaluator import Evaluator
 from model_runner import ModelRunner
 from report_generator import ReportGenerator
-
+from safety_classifier import SafetyClassifier
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Child safety evaluation pipeline")
