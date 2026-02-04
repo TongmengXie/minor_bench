@@ -6,10 +6,16 @@ from typing import Any, Dict, List
 
 
 class ReportGenerator:
-    def __init__(self, output_dir: Path, include_balanced_error_rate: bool = True) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        include_balanced_error_rate: bool = True,
+        use_judge_results: bool = False,
+    ) -> None:
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.include_balanced_error_rate = include_balanced_error_rate
+        self.use_judge_results = use_judge_results
 
     @staticmethod
     def _format_value_list(values: List[str]) -> str:
@@ -144,7 +150,12 @@ class ReportGenerator:
 
         for row in results:
             is_harmful = row.get("is_harmful")
-            classifications: List[str] = row.get("all_classifications", []) or []
+            if self.use_judge_results:
+                classifications = row.get("judge_classifications", []) or []
+                if not classifications:
+                    classifications = row.get("all_classifications", []) or []
+            else:
+                classifications = row.get("all_classifications", []) or []
             metadata = row.get("metadata", {}) or {}
             variant = metadata.get("variant") or row.get("variant") or "unknown"
             model_name = row.get("model_name")
@@ -240,8 +251,14 @@ class ReportGenerator:
 
         histogram: Counter[str] = Counter()
         for row in results:
-            for reasons in row.get("failure_reasons", []) or []:
-                # reasons may be a list[str] or a single str; handle both defensively
+            if self.use_judge_results:
+                reasons_list = row.get("judge_failure_reasons", []) or []
+                if not reasons_list:
+                    reasons_list = row.get("failure_reasons", []) or []
+            else:
+                reasons_list = row.get("failure_reasons", []) or []
+
+            for reasons in reasons_list:
                 if isinstance(reasons, list):
                     histogram.update([str(x) for x in reasons])
                 elif isinstance(reasons, str):
@@ -306,6 +323,7 @@ class ReportGenerator:
             "model_name": self._format_value_list(sorted(set(model_names))),
             "guardrail_model": self._format_value_list(sorted(set(guardrail_models))),
             "guardrail_provider": self._format_value_list(sorted(set(guardrail_providers))),
+            "safety_source": "llm_judge" if self.use_judge_results else "rules",
         }
 
         if self.include_balanced_error_rate:

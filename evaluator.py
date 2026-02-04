@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 from safety_classifier import SafetyClassifier
+from safety_judge import LLMJudge
 from system_prompts import load_system_prompt
 
 
@@ -113,6 +114,18 @@ class Evaluator:
                 return model_runner(system_prompt, prompt_text)
         raise TypeError("model_runner must expose .generate(), .run(), or be callable")
 
+    @staticmethod
+    def _extract_generation_text(generation: Any) -> str:
+        if isinstance(generation, dict):
+            return (
+                generation.get("text")
+                or generation.get("output")
+                or generation.get("content")
+                or generation.get("completion")
+                or ""
+            )
+        return str(generation)
+
     def evaluate_prompt(
         self,
         model_runner: Any,
@@ -138,7 +151,14 @@ class Evaluator:
 
             # Normalize common response formats into a string
             if isinstance(raw, dict):
-                text = raw.get("text") or raw.get("output") or raw.get("content") or str(raw)
+                text = (
+                    raw.get("text")
+                    or raw.get("output")
+                    or raw.get("content")
+                    or raw.get("completion")
+                    or str(raw)
+                )
+                
                 generations.append({"index": i, "text": text, "raw": raw})
                 decision_status = raw.get("guardrail_decision_status")
                 guardrail_decisions.append(
@@ -165,6 +185,7 @@ class Evaluator:
             "metadata": metadata,
             "generations": generations,
             "model_name": model_name,
+            "system_prompt": system_prompt,
             "guardrail_model": guardrail_model,
             "guardrail_provider": guardrail_provider,
             "guardrail_decisions": guardrail_decisions,
@@ -248,6 +269,7 @@ class Evaluator:
         self,
         results: List[Dict[str, Any]],
         classifier: Optional[SafetyClassifier] = None,
+        results_path: Optional[Path] = None,
     ) -> List[Dict[str, Any]]:
         classifier = classifier or SafetyClassifier()
 
@@ -259,11 +281,7 @@ class Evaluator:
             unsafe_count = 0
 
             for generation in generations:
-                if isinstance(generation, dict):
-                    text = generation.get("text") or ""
-                else:
-                    text = str(generation)
-
+                text = self._extract_generation_text(generation)
                 outcome = classifier.classify(text)
                 label = str(outcome.get("label") or "unknown")
                 classifications.append(label)
@@ -293,5 +311,71 @@ class Evaluator:
                 elif label == "unsafe":
                     is_harmful = True
             row["is_harmful"] = is_harmful
+
+        if results_path:
+            with results_path.open("w", encoding="utf-8") as handle:
+                for row in results:
+                    handle.write(json.dumps(row) + "\n")
+
+        return results
+
+    def annotate_with_llm_judge(
+        self,
+        results: List[Dict[str, Any]],
+        judge: LLMJudge,
+        results_path: Optional[Path] = None,
+    ) -> List[Dict[str, Any]]:
+        for row in results:
+            generations = row.get("generations", []) or []
+            classifications: List[str] = []
+            failure_reasons: List[List[str]] = []
+            raw_outputs: List[str] = []
+            safe_count = 0
+            unsafe_count = 0
+
+            system_prompt = row.get("system_prompt") or ""
+
+            for generation in generations:
+                text = self._extract_generation_text(generation)
+                outcome = judge.judge(system_prompt=system_prompt, response_text=text)
+                label = str(outcome.get("label") or "unknown")
+                classifications.append(label)
+
+                reasons = outcome.get("reasons") or []
+                if not isinstance(reasons, list):
+                    reasons = [str(reasons)]
+                failure_reasons.append([str(reason) for reason in reasons])
+                raw_outputs.append(str(outcome.get("raw") or ""))
+
+                if label.lower() == "safe":
+                    safe_count += 1
+                else:
+                    unsafe_count += 1
+
+            row["n_generations"] = len(generations)
+            row["safe_count"] = safe_count
+            row["unsafe_count"] = unsafe_count
+            row["judge_classifications"] = classifications
+            row["judge_failure_reasons"] = failure_reasons
+            row["judge_raw_outputs"] = raw_outputs
+            row["all_classifications"] = classifications
+            row["failure_reasons"] = failure_reasons
+            row["safety_source"] = "llm_judge"
+
+            metadata = row.get("metadata", {}) or {}
+            is_harmful = metadata.get("is_harmful")
+            if is_harmful is None:
+                label = str(metadata.get("label") or "").lower()
+                if label == "safe":
+                    is_harmful = False
+                elif label == "unsafe":
+                    is_harmful = True
+            row["is_harmful"] = is_harmful
+
+        return results
+        if results_path:
+            with results_path.open("w", encoding="utf-8") as handle:
+                for row in results:
+                    handle.write(json.dumps(row) + "\n")
 
         return results

@@ -74,3 +74,31 @@ Evaluates end-to-end system behavior:
 - **Scaling costs**: oracle judging is slow and expensive; preference/reward models are better suited at scale.
 - **Ground-truth ambiguity**: prompt-level labels often miss context and response quality.
 - **Interaction effects**: guardrail performance depends on the paired main model.
+## Running an evaluation
+
+```bash
+python run_eval.py \
+  --model_name llama-3.1-8b-instruct \
+  --provider scaleway \
+  --system_prompt_name default \
+  --prompt_pack_path prompt_packs/minorbench_hateful.json \
+  --safety_judge_model gpt-4o-mini \
+  --safety_judge_provider openai
+```
+
+### Safety judge options
+
+Enable the LLM safety judge by providing `--safety_judge_model`. When enabled, the pipeline uses
+the judge outputs for safety metrics and logs judge metadata in `results.jsonl`.
+
+CLI flags:
+
+- `--safety_judge_model`: model name for the safety judge (enables LLM judging).
+- `--safety_judge_provider`: provider for the judge (`auto`, `openai`, `openai_api`, `scaleway`, `local_hf`).
+- `--safety_judge_prompt`: override the judge system prompt.
+
+Equivalent JSON config keys (via `--config`):
+
+- `safety_judge_model`
+- `safety_judge_provider`
+- `safety_judge_prompt`

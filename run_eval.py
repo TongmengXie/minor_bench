@@ -5,6 +5,7 @@ from evaluator import Evaluator
 from model_runner import ModelRunner
 from report_generator import ReportGenerator
 from safety_classifier import SafetyClassifier
+from safety_judge import LLMJudge
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Child safety evaluation pipeline")
@@ -60,7 +61,25 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Comma-separated list of prompt variants to exclude",
     )
-
+    parser.add_argument(
+        "--safety_judge_model",
+        type=str,
+        default=None,
+        help="Optional LLM safety judge model name (enables LLM judge).",
+    )
+    parser.add_argument(
+        "--safety_judge_provider",
+        type=str,
+        default="auto",
+        choices=["auto", "local_hf", "openai", "openai_api", "scaleway"],
+        help="Provider for the safety judge model (defaults to auto).",
+    )
+    parser.add_argument(
+        "--safety_judge_prompt",
+        type=str,
+        default=None,
+        help="Override the default system prompt used for the LLM safety judge.",
+    )
     return parser.parse_args()
 
 
@@ -77,6 +96,14 @@ def main() -> None:
         config["guardrail_provider"] = args.guardrail_provider
     if args.guardrail_prompt:
         config["guardrail_prompt"] = args.guardrail_prompt
+
+    if args.safety_judge_model:
+        config["safety_judge_model"] = args.safety_judge_model
+    if args.safety_judge_provider:
+        config["safety_judge_provider"] = args.safety_judge_provider
+    if args.safety_judge_prompt:
+        config["safety_judge_prompt"] = args.safety_judge_prompt
+
 
     include_variants = args.include_variants.split(",") if args.include_variants else None
     exclude_variants = args.exclude_variants.split(",") if args.exclude_variants else None
@@ -102,8 +129,29 @@ def main() -> None:
         exclude_variants=exclude_variants,
         extra_dataset_paths=extra_dataset_paths,
     )
-    results = evaluator.annotate_with_safety(results, SafetyClassifier())
-    ReportGenerator(output_dir=output_dir).generate(results)
+    judge_model = config.get("safety_judge_model")
+    use_judge = bool(judge_model)
+
+    if use_judge:
+        judge = LLMJudge(
+            model_name=judge_model,
+            provider=config.get("safety_judge_provider", "auto"),
+            prompt=config.get("safety_judge_prompt"),
+            config=config,
+        )
+        results = evaluator.annotate_with_llm_judge(
+            results,
+            judge=judge,
+            results_path=output_dir / "results.jsonl",
+        )
+    else:
+        results = evaluator.annotate_with_safety(
+            results,
+            SafetyClassifier(),
+            results_path=output_dir / "results.jsonl",
+        )
+
+    ReportGenerator(output_dir=output_dir, use_judge_results=use_judge).generate(results)
     print(f"Evaluation completed. Output: {output_dir}")
 
 
