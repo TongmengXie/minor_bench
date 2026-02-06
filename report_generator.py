@@ -106,6 +106,29 @@ class ReportGenerator:
                     f"{metrics.get('total_decisions', 0)} |"
                 )
 
+        costs = summary.get("costs") or {}
+        if any(costs.values()):
+            lines.append("")
+            lines.append("## Cost summary")
+            lines.append(
+                f"- Tutor cost (USD): {costs.get('tutor_cost_usd', 'unknown')}"
+            )
+            lines.append(
+                f"- Guardrail cost (USD): {costs.get('guardrail_cost_usd', 'unknown')}"
+            )
+            lines.append(
+                f"- Judge cost (USD): {costs.get('judge_cost_usd', 'unknown')}"
+            )
+            lines.append(
+                f"- Tutor tokens: {costs.get('tutor_tokens', 'unknown')}"
+            )
+            lines.append(
+                f"- Guardrail tokens: {costs.get('guardrail_tokens', 'unknown')}"
+            )
+            lines.append(
+                f"- Judge tokens: {costs.get('judge_tokens', 'unknown')}"
+            )
+
         per_variant = summary.get("per_variant_metrics") or {}
         if per_variant:
             lines.append("")
@@ -144,6 +167,19 @@ class ReportGenerator:
         # Track confusion counts per variant for robustness metrics
         per_variant_counts: Dict[str, Dict[str, int]] = {}
         guardrail_counts: Dict[tuple[str, str], Counter[str]] = {}
+        cost_totals = {
+            "tutor_cost_usd": 0.0,
+            "guardrail_cost_usd": 0.0,
+            "judge_cost_usd": 0.0,
+            "tutor_tokens": 0,
+            "guardrail_tokens": 0,
+            "judge_tokens": 0,
+        }
+        cost_seen = {
+            "tutor": False,
+            "guardrail": False,
+            "judge": False,
+        }
         model_names: List[str] = []
         guardrail_models: List[str] = []
         guardrail_providers: List[str] = []
@@ -187,6 +223,40 @@ class ReportGenerator:
                 status_norm = str(status or "").strip().lower()
                 if status_norm in {"allow", "block", "malformed"}:
                     counter.update([status_norm])
+
+            for generation in row.get("generations", []) or []:
+                raw = generation.get("raw") if isinstance(generation, dict) else {}
+                if isinstance(raw, dict):
+                    usage = raw.get("usage")
+                    cost = raw.get("cost_usd")
+                    if cost is not None:
+                        cost_totals["tutor_cost_usd"] += float(cost)
+                        cost_seen["tutor"] = True
+                    if isinstance(usage, dict):
+                        cost_totals["tutor_tokens"] += int(usage.get("total_tokens") or 0)
+                        cost_seen["tutor"] = True
+
+                    guardrail_usage = raw.get("guardrail_usage")
+                    guardrail_cost = raw.get("guardrail_cost_usd")
+                    if guardrail_cost is not None:
+                        cost_totals["guardrail_cost_usd"] += float(guardrail_cost)
+                        cost_seen["guardrail"] = True
+                    if isinstance(guardrail_usage, dict):
+                        cost_totals["guardrail_tokens"] += int(
+                            guardrail_usage.get("total_tokens") or 0
+                        )
+                        cost_seen["guardrail"] = True
+
+            judge_costs = row.get("judge_cost_usd") or []
+            judge_usages = row.get("judge_usage") or []
+            for cost in judge_costs:
+                if cost is not None:
+                    cost_totals["judge_cost_usd"] += float(cost)
+                    cost_seen["judge"] = True
+            for usage in judge_usages:
+                if isinstance(usage, dict):
+                    cost_totals["judge_tokens"] += int(usage.get("total_tokens") or 0)
+                    cost_seen["judge"] = True
 
             variant_counts = per_variant_counts.setdefault(
                 str(variant),
@@ -324,6 +394,19 @@ class ReportGenerator:
             "guardrail_model": self._format_value_list(sorted(set(guardrail_models))),
             "guardrail_provider": self._format_value_list(sorted(set(guardrail_providers))),
             "safety_source": "llm_judge" if self.use_judge_results else "rules",
+        }
+
+        summary["costs"] = {
+            "tutor_cost_usd": cost_totals["tutor_cost_usd"] if cost_seen["tutor"] else None,
+            "guardrail_cost_usd": cost_totals["guardrail_cost_usd"]
+            if cost_seen["guardrail"]
+            else None,
+            "judge_cost_usd": cost_totals["judge_cost_usd"] if cost_seen["judge"] else None,
+            "tutor_tokens": cost_totals["tutor_tokens"] if cost_seen["tutor"] else None,
+            "guardrail_tokens": cost_totals["guardrail_tokens"]
+            if cost_seen["guardrail"]
+            else None,
+            "judge_tokens": cost_totals["judge_tokens"] if cost_seen["judge"] else None,
         }
 
         if self.include_balanced_error_rate:

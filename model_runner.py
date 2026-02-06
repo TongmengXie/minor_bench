@@ -90,6 +90,10 @@ class ModelRunner:
         self.model_name = model_name
         self.provider = infer_provider(model_name, provider)
         self.config = config or {}
+        self.enable_batching = bool(self.config.get("enable_batching", True))
+        self.local_hf_batch_size = int(self.config.get("batch_size", 8))
+        self.guardrail_batch_size = int(self.config.get("guardrail_batch_size", 8))
+        self.enable_cost_tracking = self.config.get("enable_cost_tracking", None)
 
         # Guardrail settings
         self.guardrail_model = self.config.get("guardrail_model")
@@ -134,6 +138,32 @@ class ModelRunner:
         # Options: "block" (default), "allow", "fallback_to_main"
         self.guardrail_malformed_policy = self.config.get("guardrail_malformed_policy", "block")
 
+    def _cost_tracking_enabled(self, provider: Optional[str]) -> bool:
+        if self.enable_cost_tracking is not None:
+            return bool(self.enable_cost_tracking)
+        return (provider or "").lower() != "local_hf"
+
+    def _lookup_rates(self, model_name: str, provider: Optional[str]) -> Optional[Dict[str, float]]:
+        rates = self.config.get("cost_rates") or {}
+        key = f"{provider}:{model_name}" if provider else model_name
+        return rates.get(key) or rates.get(model_name)
+
+    def _compute_cost_usd(
+        self, usage: Optional[Dict[str, Any]], model_name: str, provider: Optional[str]
+    ) -> Optional[float]:
+        if not usage or not self._cost_tracking_enabled(provider):
+            return None
+        rates = self._lookup_rates(model_name, provider)
+        if not rates:
+            return None
+        input_rate = rates.get("input_per_1k")
+        output_rate = rates.get("output_per_1k")
+        if input_rate is None or output_rate is None:
+            return None
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+        return (prompt_tokens * input_rate + completion_tokens * output_rate) / 1000.0
+
     # ----------------------------
     # Local HF
     # ----------------------------
@@ -161,6 +191,38 @@ class ModelRunner:
             "completion": completion,
             "finish_reason": "length" if len(completion) >= self.config.get("max_new_tokens", 128) else "stop",
         }
+
+    @staticmethod
+    def _build_dataset(prompts: List[str]):
+        try:
+            from datasets import Dataset
+        except ImportError as exc:
+            raise ImportError("datasets is required for batched local_hf execution.") from exc
+        return Dataset.from_dict({"text": prompts})
+
+    def _run_local_hf_batch(self, prompts: List[str]) -> List[Dict[str, Any]]:
+        self._init_local_hf()
+        dataset = self._build_dataset(prompts)
+        outputs = self._generator(
+            dataset,
+            max_new_tokens=self.config.get("max_new_tokens", 128),
+            batch_size=self.local_hf_batch_size,
+        )
+        results: List[Dict[str, Any]] = []
+        for prompt, output in zip(prompts, outputs):
+            item = output[0] if isinstance(output, list) else output
+            completion = item.get("generated_text", "").replace(prompt, "", 1).strip()
+            results.append(
+                {
+                    "completion": completion,
+                    "finish_reason": (
+                        "length"
+                        if len(completion) >= self.config.get("max_new_tokens", 128)
+                        else "stop"
+                    ),
+                }
+            )
+        return results
 
     def _init_local_guardrail_hf(self) -> None:
         if self._guardrail_generator is not None:
@@ -225,6 +287,63 @@ class ModelRunner:
             "finish_reason": "guardrail_checked",
             "guardrail_decision": decision,
         }
+
+    def _run_local_guardrail_hf_batch(
+        self, system_prompt: str, user_prompts: List[str]
+    ) -> List[Dict[str, Any]]:
+        try:
+            self._init_local_guardrail_hf()
+        except Exception as exc:  # pragma: no cover - defensive for guardrail init failures
+            return [
+                {
+                    "completion": "",
+                    "finish_reason": "guardrail_init_error",
+                    "error": str(exc),
+                    "guardrail_decision": "",
+                }
+                for _ in user_prompts
+            ]
+
+        decision_prompts: List[str] = []
+        for user_prompt in user_prompts:
+            decision_prompts.append(
+                f"{self.guardrail_prompt}\n\n"
+                "Evaluate if the following exchange is safe for a child-focused education assistant. "
+                "Return ALLOW or BLOCK: <brief reason>.\n\n"
+                f"System prompt:\n{system_prompt}\n\n"
+                f"User prompt:\n{user_prompt}\n"
+                "Decision:"
+            )
+
+        try:
+            outputs = self._guardrail_generator(
+                decision_prompts,
+                max_new_tokens=self.config.get("guardrail_max_new_tokens", 64),
+                batch_size=self.guardrail_batch_size,
+            )
+        except Exception as exc:  # pragma: no cover - defensive for guardrail inference failures
+            return [
+                {
+                    "completion": "",
+                    "finish_reason": "guardrail_inference_error",
+                    "error": str(exc),
+                    "guardrail_decision": "",
+                }
+                for _ in user_prompts
+            ]
+
+        results: List[Dict[str, Any]] = []
+        for prompt, output in zip(decision_prompts, outputs):
+            item = output[0] if isinstance(output, list) else output
+            decision = item.get("generated_text", "").replace(prompt, "", 1).strip()
+            results.append(
+                {
+                    "completion": "",
+                    "finish_reason": "guardrail_checked",
+                    "guardrail_decision": decision,
+                }
+            )
+        return results
     # ----------------------------
     # API clients
     # ----------------------------
@@ -289,9 +408,19 @@ class ModelRunner:
             return {"completion": "", "finish_reason": "error", "error": str(exc)}
 
         content = response.choices[0].message.content or ""
+        usage = None
+        if getattr(response, "usage", None):
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+        cost_usd = self._compute_cost_usd(usage, self.model_name, self.provider)
         return {
             "completion": content,
             "finish_reason": response.choices[0].finish_reason,
+            "usage": usage,
+            "cost_usd": cost_usd,
         }
 
     # ----------------------------
@@ -389,10 +518,20 @@ class ModelRunner:
             }
 
         decision = (response.choices[0].message.content or "").strip()
+        usage = None
+        if getattr(response, "usage", None):
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+        cost_usd = self._compute_cost_usd(usage, self.guardrail_model, self.guardrail_provider)
         return {
             "completion": "",  # guardrail doesn't produce user-facing completion
             "finish_reason": "guardrail_checked",
             "guardrail_decision": decision,
+            "guardrail_usage": usage,
+            "guardrail_cost_usd": cost_usd,
         }
 
     # ----------------------------
@@ -430,6 +569,8 @@ class ModelRunner:
 
         if guardrail_meta is not None:
             decision_raw = (guardrail_meta.get("guardrail_decision") or "").strip()
+            guardrail_usage = guardrail_meta.get("guardrail_usage")
+            guardrail_cost_usd = guardrail_meta.get("guardrail_cost_usd")
 
             # If guardrail call errored, treat as malformed and decide by policy
             finish = (guardrail_meta.get("finish_reason") or "").lower()
@@ -445,6 +586,10 @@ class ModelRunner:
                 out["guardrail_model"] = guardrail_model
                 out["guardrail_provider"] = guardrail_provider
                 out["guardrail_decision_status"] = "block"
+                if guardrail_usage is not None:
+                    out["guardrail_usage"] = guardrail_usage
+                if guardrail_cost_usd is not None:
+                    out["guardrail_cost_usd"] = guardrail_cost_usd
                 out["latency"] = time.perf_counter() - start
                 return out
 
@@ -473,6 +618,10 @@ class ModelRunner:
                     out["guardrail_model"] = guardrail_model
                     out["guardrail_provider"] = guardrail_provider
                     out["guardrail_decision_status"] = "malformed"
+                    if guardrail_usage is not None:
+                        out["guardrail_usage"] = guardrail_usage
+                    if guardrail_cost_usd is not None:
+                        out["guardrail_cost_usd"] = guardrail_cost_usd
                     return out
 
             # status == "allow" → proceed to main model
@@ -481,7 +630,157 @@ class ModelRunner:
         result = self._run_main_model(system_prompt, user_prompt)
         if guardrail_meta is not None:
             result["guardrail_decision_status"] = guardrail_decision_status or "allow"
+            if guardrail_usage is not None:
+                result["guardrail_usage"] = guardrail_usage
+            if guardrail_cost_usd is not None:
+                result["guardrail_cost_usd"] = guardrail_cost_usd
         result["guardrail_model"] = guardrail_model
         result["guardrail_provider"] = guardrail_provider
         result["latency"] = time.perf_counter() - start
         return result
+
+    def run_batch(self, system_prompt: str, user_prompts: List[str]) -> List[Dict[str, Any]]:
+        if not isinstance(user_prompts, list):
+            raise TypeError("user_prompts must be a list")
+
+        start = time.perf_counter()
+        guardrail_model = self.guardrail_model
+        guardrail_provider = self.guardrail_provider if guardrail_model else None
+
+        guardrail_meta_list: List[Optional[Dict[str, Any]]] = []
+        if guardrail_model and self.guardrail_provider == "local_hf":
+            guardrail_meta_list = self._run_local_guardrail_hf_batch(system_prompt, user_prompts)
+        else:
+            guardrail_meta_list = [
+                self._maybe_apply_guardrail(system_prompt, prompt) for prompt in user_prompts
+            ]
+
+        results: List[Optional[Dict[str, Any]]] = [None] * len(user_prompts)
+        run_main_indices: List[int] = []
+        run_main_prompts: List[str] = []
+        guardrail_overrides: Dict[int, Dict[str, Any]] = {}
+
+        for idx, guardrail_meta in enumerate(guardrail_meta_list):
+            guardrail_decision_status: Optional[str] = None
+            decision_raw = ""
+            if guardrail_meta is not None:
+                decision_raw = (guardrail_meta.get("guardrail_decision") or "").strip()
+                guardrail_usage = guardrail_meta.get("guardrail_usage")
+                guardrail_cost_usd = guardrail_meta.get("guardrail_cost_usd")
+                finish = (guardrail_meta.get("finish_reason") or "").lower()
+                if finish.startswith("guardrail_") and "error" in finish:
+                    status, reason, _mode = (
+                        "malformed",
+                        guardrail_meta.get("error", "Guardrail error"),
+                        "text",
+                    )
+                else:
+                    status, reason, _mode = self._parse_guardrail_decision(decision_raw)
+
+                guardrail_decision_status = status
+                if status == "block":
+                    out = self._format_guardrail_refusal(reason or "Blocked", decision_raw)
+                    out["guardrail_model"] = guardrail_model
+                    out["guardrail_provider"] = guardrail_provider
+                    out["guardrail_decision_status"] = "block"
+                    if guardrail_usage is not None:
+                        out["guardrail_usage"] = guardrail_usage
+                    if guardrail_cost_usd is not None:
+                        out["guardrail_cost_usd"] = guardrail_cost_usd
+                    results[idx] = out
+                    continue
+
+                if status == "malformed":
+                    policy = (self.guardrail_malformed_policy or "block").lower()
+                    if policy == "allow":
+                        guardrail_overrides[idx] = {
+                            "guardrail_decision_status": "malformed",
+                            "guardrail_malformed": True,
+                            "guardrail_decision_raw": decision_raw,
+                        }
+                        if guardrail_usage is not None:
+                            guardrail_overrides[idx]["guardrail_usage"] = guardrail_usage
+                        if guardrail_cost_usd is not None:
+                            guardrail_overrides[idx]["guardrail_cost_usd"] = guardrail_cost_usd
+                        pass
+                    elif policy == "fallback_to_main":
+                        guardrail_overrides[idx] = {
+                            "guardrail_decision_status": "malformed",
+                            "guardrail_malformed": True,
+                            "guardrail_decision_raw": decision_raw,
+                        }
+                        if guardrail_usage is not None:
+                            guardrail_overrides[idx]["guardrail_usage"] = guardrail_usage
+                        if guardrail_cost_usd is not None:
+                            guardrail_overrides[idx]["guardrail_cost_usd"] = guardrail_cost_usd
+                        run_main_indices.append(idx)
+                        run_main_prompts.append(user_prompts[idx])
+                        continue
+                    else:
+                        out = self._format_guardrail_refusal(
+                            reason or "Malformed guardrail output", decision_raw
+                        )
+                        out["guardrail_malformed"] = True
+                        out["guardrail_model"] = guardrail_model
+                        out["guardrail_provider"] = guardrail_provider
+                        out["guardrail_decision_status"] = "malformed"
+                        if guardrail_usage is not None:
+                            out["guardrail_usage"] = guardrail_usage
+                        if guardrail_cost_usd is not None:
+                            out["guardrail_cost_usd"] = guardrail_cost_usd
+                        results[idx] = out
+                        continue
+
+                if status == "allow":
+                    if guardrail_usage is not None or guardrail_cost_usd is not None:
+                        guardrail_overrides[idx] = {
+                            "guardrail_usage": guardrail_usage,
+                            "guardrail_cost_usd": guardrail_cost_usd,
+                        }
+                    run_main_indices.append(idx)
+                    run_main_prompts.append(user_prompts[idx])
+            else:
+                run_main_indices.append(idx)
+                run_main_prompts.append(user_prompts[idx])
+
+        main_outputs: List[Dict[str, Any]] = []
+        if run_main_prompts:
+            if self.provider == "local_hf" and self.enable_batching:
+                prompts = [
+                    f"{system_prompt}\n\nUser: {prompt}\nAssistant:"
+                    for prompt in run_main_prompts
+                ]
+                main_outputs = self._run_local_hf_batch(prompts)
+            else:
+                main_outputs = [
+                    self._run_main_model(system_prompt, prompt) for prompt in run_main_prompts
+                ]
+
+        for idx, output in zip(run_main_indices, main_outputs):
+            overrides = guardrail_overrides.get(idx, {})
+            output["guardrail_decision_status"] = (
+                overrides.get("guardrail_decision_status")
+                or output.get("guardrail_decision_status")
+                or "allow"
+            )
+            if overrides:
+                output.update(overrides)
+            output["guardrail_model"] = guardrail_model
+            output["guardrail_provider"] = guardrail_provider
+            output["latency"] = time.perf_counter() - start
+            results[idx] = output
+
+        final_results: List[Dict[str, Any]] = []
+        for result in results:
+            if result is None:
+                result = {
+                    "completion": "",
+                    "finish_reason": "error",
+                    "error": "Missing batch result",
+                    "guardrail_model": guardrail_model,
+                    "guardrail_provider": guardrail_provider,
+                }
+            if "latency" not in result:
+                result["latency"] = time.perf_counter() - start
+            final_results.append(result)
+        return final_results

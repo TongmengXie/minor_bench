@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
+
+from tqdm import tqdm
 from safety_classifier import SafetyClassifier
 from safety_judge import LLMJudge
 from system_prompts import load_system_prompt
@@ -36,7 +38,12 @@ class Evaluator:
         out = "".join(keep).strip("-")
         return out or "unknown"
 
-    def _prepare_output_dir(self, model_name: str, system_prompt_name: str) -> Path:
+    def _prepare_output_dir(
+        self,
+        model_name: str,
+        system_prompt_name: str,
+        judge_meta: Optional[Dict[str, Any]] = None,
+    ) -> Path:
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         model_part = self._slug(model_name)
         prompt_part = self._slug(system_prompt_name)
@@ -51,6 +58,8 @@ class Evaluator:
             "created_utc": ts,
             "cwd": os.getcwd(),
         }
+        if judge_meta:
+            meta.update(judge_meta)
         (output_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         return output_dir
 
@@ -204,7 +213,11 @@ class Evaluator:
     ) -> Tuple[List[Dict[str, Any]], Path]:
         system_prompt = load_system_prompt(system_prompt_name)
         model_name = getattr(model_runner, "model_name", "unknown")
-        output_dir = self._prepare_output_dir(model_name, system_prompt_name)
+        output_dir = self._prepare_output_dir(
+            model_name,
+            system_prompt_name,
+            judge_meta=getattr(model_runner, "judge_meta", None),
+        )
         results_path = output_dir / "results.jsonl"
         if results_path.exists():
             results_path.unlink()
@@ -235,20 +248,90 @@ class Evaluator:
         results: List[Dict[str, Any]] = []
         total_batches = (len(filtered_items) + batch_size - 1) // batch_size if filtered_items else 0
 
-        for batch_index in range(total_batches):
+        batch_iter = range(total_batches)
+        if total_batches:
+            batch_iter = tqdm(batch_iter, desc="eval batches")
+
+        for batch_index in batch_iter:
             start = batch_index * batch_size
             batch_items = filtered_items[start : start + batch_size]
             batch_results: List[Dict[str, Any]] = []
 
-            for prompt_item in batch_items:
-                batch_results.append(
-                    self.evaluate_prompt(
-                        model_runner,
-                        system_prompt,
-                        prompt_item,
-                        k=k,
-                    )
+            use_batching = bool(
+                getattr(model_runner, "enable_batching", False)
+                and hasattr(model_runner, "run_batch")
+                and (
+                    getattr(model_runner, "provider", "") == "local_hf"
+                    or getattr(model_runner, "guardrail_provider", "") == "local_hf"
                 )
+            )
+
+            if use_batching:
+                prompt_texts: List[str] = []
+                base_rows: List[Dict[str, Any]] = []
+                guardrail_model = getattr(model_runner, "guardrail_model", None)
+                guardrail_provider = getattr(model_runner, "guardrail_provider", None)
+                model_name = getattr(model_runner, "model_name", None)
+
+                for prompt_item in batch_items:
+                    prompt_text = prompt_item.get("prompt_text") or prompt_item.get("prompt")
+                    if not prompt_text:
+                        raise ValueError("prompt_item missing prompt_text/prompt")
+
+                    metadata = prompt_item.get("metadata", {}) or {}
+                    variant = metadata.get("variant") or prompt_item.get("variant") or "original"
+                    metadata.setdefault("variant", variant)
+
+                    prompt_texts.append(prompt_text)
+                    base_rows.append(
+                        {
+                            "prompt_text": prompt_text,
+                            "metadata": metadata,
+                            "generations": [],
+                            "model_name": model_name,
+                            "system_prompt": system_prompt,
+                            "guardrail_model": guardrail_model,
+                            "guardrail_provider": guardrail_provider,
+                            "guardrail_decisions": [],
+                        }
+                    )
+
+                for i in range(k):
+                    outputs = model_runner.run_batch(system_prompt, prompt_texts)
+                    for idx, output in enumerate(outputs):
+                        text = self._extract_generation_text(output)
+                        base_rows[idx]["generations"].append(
+                            {"index": i, "text": text, "raw": output}
+                        )
+                        decision_status = None
+                        if isinstance(output, dict):
+                            decision_status = output.get("guardrail_decision_status")
+                        base_rows[idx]["guardrail_decisions"].append(
+                            {
+                                "index": i,
+                                "status": decision_status,
+                                "guardrail_model": output.get("guardrail_model", guardrail_model)
+                                if isinstance(output, dict)
+                                else guardrail_model,
+                                "guardrail_provider": output.get(
+                                    "guardrail_provider", guardrail_provider
+                                )
+                                if isinstance(output, dict)
+                                else guardrail_provider,
+                            }
+                        )
+
+                batch_results.extend(base_rows)
+            else:
+                for prompt_item in batch_items:
+                    batch_results.append(
+                        self.evaluate_prompt(
+                            model_runner,
+                            system_prompt,
+                            prompt_item,
+                            k=k,
+                        )
+                    )
 
             if batch_results:
                 with results_path.open("a", encoding="utf-8") as handle:
@@ -325,19 +408,43 @@ class Evaluator:
         judge: LLMJudge,
         results_path: Optional[Path] = None,
     ) -> List[Dict[str, Any]]:
-        for row in results:
+        row_iter = results
+        if results:
+            row_iter = tqdm(results, desc="judge rows")
+
+        judge_batch_size = int(judge.config.get("judge_batch_size", 8))
+
+        for row in row_iter:
             generations = row.get("generations", []) or []
             classifications: List[str] = []
             failure_reasons: List[List[str]] = []
             raw_outputs: List[str] = []
+            judge_usages: List[Optional[Dict[str, Any]]] = []
+            judge_costs: List[Optional[float]] = []
             safe_count = 0
             unsafe_count = 0
 
             system_prompt = row.get("system_prompt") or ""
 
-            for generation in generations:
-                text = self._extract_generation_text(generation)
-                outcome = judge.judge(system_prompt=system_prompt, response_text=text)
+            if (
+                getattr(judge, "provider", None) == "local_hf"
+                and hasattr(judge, "judge_batch")
+                and generations
+            ):
+                texts = [self._extract_generation_text(g) for g in generations]
+                system_prompts = [system_prompt] * len(texts)
+                outcomes: List[Dict[str, Any]] = []
+                for start in range(0, len(texts), judge_batch_size):
+                    chunk_texts = texts[start : start + judge_batch_size]
+                    chunk_systems = system_prompts[start : start + judge_batch_size]
+                    outcomes.extend(judge.judge_batch(chunk_systems, chunk_texts))
+            else:
+                outcomes = [
+                    judge.judge(system_prompt=system_prompt, response_text=self._extract_generation_text(g))
+                    for g in generations
+                ]
+
+            for outcome in outcomes:
                 label = str(outcome.get("label") or "unknown")
                 classifications.append(label)
 
@@ -346,6 +453,8 @@ class Evaluator:
                     reasons = [str(reasons)]
                 failure_reasons.append([str(reason) for reason in reasons])
                 raw_outputs.append(str(outcome.get("raw") or ""))
+                judge_usages.append(outcome.get("usage"))
+                judge_costs.append(outcome.get("cost_usd"))
 
                 if label.lower() == "safe":
                     safe_count += 1
@@ -358,6 +467,8 @@ class Evaluator:
             row["judge_classifications"] = classifications
             row["judge_failure_reasons"] = failure_reasons
             row["judge_raw_outputs"] = raw_outputs
+            row["judge_usage"] = judge_usages
+            row["judge_cost_usd"] = judge_costs
             row["all_classifications"] = classifications
             row["failure_reasons"] = failure_reasons
             row["safety_source"] = "llm_judge"
@@ -372,7 +483,6 @@ class Evaluator:
                     is_harmful = True
             row["is_harmful"] = is_harmful
 
-        return results
         if results_path:
             with results_path.open("w", encoding="utf-8") as handle:
                 for row in results:
