@@ -55,6 +55,16 @@ class LLMJudge:
         generation_kwargs = {"model": self.model_name}
         generation_kwargs.update(self.config.get("judge_generation_kwargs", {}))
         self._generator = pipeline("text-generation", **generation_kwargs)
+        self._ensure_pad_token()
+
+    def _ensure_pad_token(self) -> None:
+        try:
+            if getattr(self._generator, "tokenizer", None) and self._generator.tokenizer.pad_token_id is None:
+                eos_id = getattr(self._generator.model.config, "eos_token_id", None)
+                if eos_id is not None:
+                    self._generator.tokenizer.pad_token_id = eos_id
+        except Exception:
+            pass
 
     def _run_local_hf(self, prompt: str) -> str:
         self._init_local_hf()
@@ -74,9 +84,8 @@ class LLMJudge:
 
     def _run_local_hf_batch(self, prompts: List[str]) -> List[str]:
         self._init_local_hf()
-        dataset = self._build_dataset(prompts)
         outputs = self._generator(
-            dataset,
+            prompts,
             max_new_tokens=self.config.get("judge_max_new_tokens", 256),
             batch_size=self.config.get("judge_batch_size", 8),
         )
