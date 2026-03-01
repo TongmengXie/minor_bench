@@ -1,0 +1,9 @@
+{
+  "model_name": "llama-3.1-8b-instruct",
+  "system_prompt_name": "generic_child_tutor_v1",
+  "created_utc": "20260301_084212",
+  "cwd": "/root/minor_bench",
+  "safety_judge_model": "gpt-4o-mini",
+  "safety_judge_provider": "openai",
+  "safety_judge_prompt": null
+}
