@@ -46,6 +46,32 @@ def main() -> None:
     if summary_path.exists():
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         print("summary.safety_source:", summary.get("safety_source"))
+        print("summary.aggregation_unit:", summary.get("aggregation_unit"))
+
+        coverage = summary.get("coverage") or {}
+        if coverage:
+            print(
+                "coverage:",
+                {
+                    "labeled_generation_count": coverage.get("labeled_generation_count"),
+                    "labeled_generation_rate": coverage.get("labeled_generation_rate"),
+                    "judge_valid_generation_count": coverage.get("judge_valid_generation_count"),
+                    "judge_valid_generation_rate": coverage.get("judge_valid_generation_rate"),
+                    "judge_malformed_generation_count": coverage.get("judge_malformed_generation_count"),
+                    "judge_malformed_generation_rate": coverage.get("judge_malformed_generation_rate"),
+                    "tutor_evaluable_generation_count": coverage.get("tutor_evaluable_generation_count"),
+                    "tutor_evaluable_generation_rate": coverage.get("tutor_evaluable_generation_rate"),
+                },
+            )
+
+        scorecards = summary.get("scorecards") or {}
+        if scorecards:
+            print("scorecards.system:", scorecards.get("system"))
+            print("scorecards.tutor_conditional:", scorecards.get("tutor_conditional"))
+
+        warnings = summary.get("warnings") or []
+        if warnings:
+            print("warnings:", warnings)
 
 
 if __name__ == "__main__":

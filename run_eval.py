@@ -9,6 +9,38 @@ from report_generator import ReportGenerator
 from safety_classifier import SafetyClassifier
 from safety_judge import LLMJudge
 
+
+def _print_run_configuration(
+    *,
+    mode: str,
+    model_name: str | None,
+    provider: str | None,
+    guardrail_model: str | None,
+    guardrail_provider: str | None,
+    safety_judge_model: str | None,
+    safety_judge_provider: str | None,
+    prompt_pack_path: str | None,
+    extra_dataset_paths: list[str] | None,
+    include_variants: list[str] | None,
+    exclude_variants: list[str] | None,
+) -> None:
+    payload = {
+        "mode": mode,
+        "model_name": model_name,
+        "provider": provider,
+        "guardrail_model": guardrail_model,
+        "guardrail_provider": guardrail_provider,
+        "safety_judge_model": safety_judge_model,
+        "safety_judge_provider": safety_judge_provider,
+        "prompt_pack_path": prompt_pack_path,
+        "extra_dataset_paths": extra_dataset_paths or [],
+        "include_variants": include_variants or [],
+        "exclude_variants": exclude_variants or [],
+    }
+    print("Resolved evaluation config:")
+    print(json.dumps(payload, indent=2))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Child safety evaluation pipeline")
 
@@ -28,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--extra_dataset_paths",
         type=str,
-        default="datasets/true_negative_safe_sensitive.jsonl",
+        default=None,
         help="Comma-separated list of JSONL datasets to include alongside the prompt pack. "
              "Use 'None' to disable.",
     )
@@ -145,6 +177,20 @@ def main() -> None:
             for p in args.extra_dataset_paths.split(",")
             if p.strip() and p.strip().lower() != "none"
         ]
+
+    _print_run_configuration(
+        mode="judge_only" if args.judge_only else "evaluate",
+        model_name=args.model_name,
+        provider=args.provider,
+        guardrail_model=config.get("guardrail_model"),
+        guardrail_provider=config.get("guardrail_provider"),
+        safety_judge_model=config.get("safety_judge_model"),
+        safety_judge_provider=config.get("safety_judge_provider"),
+        prompt_pack_path=args.prompt_pack_path,
+        extra_dataset_paths=extra_dataset_paths,
+        include_variants=include_variants,
+        exclude_variants=exclude_variants,
+    )
 
     evaluator = Evaluator()
 

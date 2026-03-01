@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -99,9 +100,111 @@ class Evaluator:
                 metadata.setdefault("variant", "original")
                 payload["prompt_text"] = prompt_text
                 payload["metadata"] = metadata
+                payload["_dataset_source"] = str(metadata.get("dataset") or Path(dataset_path).stem)
                 items.append(payload)
 
         return items
+
+    def _resolve_is_harmful(
+        self,
+        metadata: Dict[str, Any],
+        *,
+        dataset_source: Optional[str] = None,
+        prompt_pack_name: Optional[str] = None,
+        prompt_pack_subset: Optional[str] = None,
+    ) -> Tuple[Optional[bool], str]:
+        explicit = metadata.get("is_harmful")
+        if isinstance(explicit, bool):
+            return explicit, "explicit_is_harmful"
+
+        label = str(metadata.get("label") or "").strip().lower()
+        if label == "safe":
+            return False, "metadata_label"
+        if label == "unsafe":
+            return True, "metadata_label"
+
+        original_category = str(metadata.get("original_category") or "").strip().lower()
+        if original_category == "hateful":
+            return True, "inferred_hateful"
+
+        hint = " ".join(
+            [
+                str(dataset_source or ""),
+                str(prompt_pack_name or ""),
+                str(prompt_pack_subset or ""),
+            ]
+        ).lower()
+        if "hateful" in hint:
+            return True, "inferred_hateful"
+
+        return None, "unknown"
+
+    def _write_data_manifest(
+        self,
+        *,
+        output_dir: Path,
+        prompt_pack_path: str,
+        prompt_pack_name: str,
+        prompt_pack_subset: str,
+        extra_dataset_paths: Optional[List[str]],
+        include_variants: Optional[List[str]],
+        exclude_variants: Optional[List[str]],
+        filtered_items: List[Dict[str, Any]],
+    ) -> None:
+        dataset_source_counts: Counter[str] = Counter()
+        variant_counts: Counter[str] = Counter()
+        label_state_counts: Counter[str] = Counter()
+        label_source_counts: Counter[str] = Counter()
+        labeled_count = 0
+
+        for item in filtered_items:
+            metadata = item.get("metadata", {}) or {}
+            dataset_source = str(
+                item.get("_dataset_source")
+                or metadata.get("dataset")
+                or "unknown"
+            )
+            dataset_source_counts.update([dataset_source])
+
+            variant = str(metadata.get("variant") or item.get("variant") or "original")
+            variant_counts.update([variant])
+
+            is_harmful, label_source = self._resolve_is_harmful(
+                metadata,
+                dataset_source=dataset_source,
+                prompt_pack_name=item.get("_prompt_pack_name"),
+                prompt_pack_subset=item.get("_prompt_pack_subset"),
+            )
+            label_source_counts.update([label_source])
+            if is_harmful is None:
+                label_state_counts.update(["unknown"])
+            elif is_harmful:
+                labeled_count += 1
+                label_state_counts.update(["harmful"])
+            else:
+                labeled_count += 1
+                label_state_counts.update(["safe"])
+
+        total_items = len(filtered_items)
+        manifest = {
+            "prompt_pack_path": prompt_pack_path,
+            "prompt_pack_name": prompt_pack_name,
+            "prompt_pack_subset": prompt_pack_subset,
+            "extra_dataset_paths": extra_dataset_paths or [],
+            "include_variants": include_variants or [],
+            "exclude_variants": exclude_variants or [],
+            "total_items": total_items,
+            "labeled_item_count": labeled_count,
+            "labeled_coverage_rate": (labeled_count / total_items) if total_items else 0.0,
+            "counts_by_dataset_source": dict(dataset_source_counts),
+            "counts_by_variant": dict(variant_counts),
+            "counts_by_harmful_label_state": dict(label_state_counts),
+            "counts_by_label_source": dict(label_source_counts),
+        }
+        (output_dir / "data_manifest.json").write_text(
+            json.dumps(manifest, indent=2),
+            encoding="utf-8",
+        )
 
     def _call_model_runner(self, model_runner: Any, system_prompt: str, prompt_text: str) -> Any:
         """
@@ -149,6 +252,11 @@ class Evaluator:
         metadata = prompt_item.get("metadata", {}) or {}
         variant = metadata.get("variant") or prompt_item.get("variant") or "original"
         metadata.setdefault("variant", variant)
+        dataset_source = str(
+            prompt_item.get("_dataset_source")
+            or metadata.get("dataset")
+            or "unknown"
+        )
 
         generations: List[Dict[str, Any]] = []
         guardrail_decisions: List[Dict[str, Any]] = []
@@ -198,6 +306,9 @@ class Evaluator:
             "guardrail_model": guardrail_model,
             "guardrail_provider": guardrail_provider,
             "guardrail_decisions": guardrail_decisions,
+            "dataset_source": dataset_source,
+            "prompt_pack_name": prompt_item.get("_prompt_pack_name"),
+            "prompt_pack_subset": prompt_item.get("_prompt_pack_subset"),
         }
 
     def evaluate_pack(
@@ -223,7 +334,17 @@ class Evaluator:
             results_path.unlink()
 
         prompt_pack = json.loads(Path(prompt_pack_path).read_text(encoding="utf-8"))
-        items = prompt_pack.get("items", []) or []
+        prompt_pack_name = str(prompt_pack.get("name") or Path(prompt_pack_path).stem)
+        prompt_pack_subset = str(prompt_pack.get("subset") or "")
+        prompt_pack_source = f"prompt_pack:{prompt_pack_name}"
+
+        items: List[Dict[str, Any]] = []
+        for item in prompt_pack.get("items", []) or []:
+            enriched = dict(item)
+            enriched["_dataset_source"] = prompt_pack_source
+            enriched["_prompt_pack_name"] = prompt_pack_name
+            enriched["_prompt_pack_subset"] = prompt_pack_subset
+            items.append(enriched)
 
         if extra_dataset_paths:
             for dataset_path in extra_dataset_paths:
@@ -241,6 +362,17 @@ class Evaluator:
             if exclude_set and variant in exclude_set:
                 continue
             filtered_items.append(item)
+
+        self._write_data_manifest(
+            output_dir=output_dir,
+            prompt_pack_path=prompt_pack_path,
+            prompt_pack_name=prompt_pack_name,
+            prompt_pack_subset=prompt_pack_subset,
+            extra_dataset_paths=extra_dataset_paths,
+            include_variants=include_variants,
+            exclude_variants=exclude_variants,
+            filtered_items=filtered_items,
+        )
 
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
@@ -281,6 +413,11 @@ class Evaluator:
                     metadata = prompt_item.get("metadata", {}) or {}
                     variant = metadata.get("variant") or prompt_item.get("variant") or "original"
                     metadata.setdefault("variant", variant)
+                    dataset_source = str(
+                        prompt_item.get("_dataset_source")
+                        or metadata.get("dataset")
+                        or "unknown"
+                    )
 
                     prompt_texts.append(prompt_text)
                     base_rows.append(
@@ -293,6 +430,9 @@ class Evaluator:
                             "guardrail_model": guardrail_model,
                             "guardrail_provider": guardrail_provider,
                             "guardrail_decisions": [],
+                            "dataset_source": dataset_source,
+                            "prompt_pack_name": prompt_item.get("_prompt_pack_name"),
+                            "prompt_pack_subset": prompt_item.get("_prompt_pack_subset"),
                         }
                     )
 
@@ -362,11 +502,14 @@ class Evaluator:
             failure_reasons: List[List[str]] = []
             safe_count = 0
             unsafe_count = 0
+            unknown_count = 0
 
             for generation in generations:
                 text = self._extract_generation_text(generation)
                 outcome = classifier.classify(text)
-                label = str(outcome.get("label") or "unknown")
+                label = str(outcome.get("label") or "unknown").strip().lower()
+                if label not in {"safe", "unsafe"}:
+                    label = "unknown"
                 classifications.append(label)
 
                 reasons = outcome.get("reasons") or []
@@ -374,26 +517,32 @@ class Evaluator:
                     reasons = [str(reasons)]
                 failure_reasons.append([str(reason) for reason in reasons])
 
-                if label.lower() == "safe":
+                if label == "safe":
                     safe_count += 1
+                elif label == "unsafe":
+                    unsafe_count += 1
                 else:
+                    unknown_count += 1
                     unsafe_count += 1
 
             row["n_generations"] = len(generations)
             row["safe_count"] = safe_count
             row["unsafe_count"] = unsafe_count
+            row["unknown_count"] = unknown_count
             row["all_classifications"] = classifications
             row["failure_reasons"] = failure_reasons
 
             metadata = row.get("metadata", {}) or {}
-            is_harmful = metadata.get("is_harmful")
-            if is_harmful is None:
-                label = str(metadata.get("label") or "").lower()
-                if label == "safe":
-                    is_harmful = False
-                elif label == "unsafe":
-                    is_harmful = True
+            if "dataset_source" not in row:
+                row["dataset_source"] = str(metadata.get("dataset") or "unknown")
+            is_harmful, label_source = self._resolve_is_harmful(
+                metadata,
+                dataset_source=row.get("dataset_source"),
+                prompt_pack_name=row.get("prompt_pack_name"),
+                prompt_pack_subset=row.get("prompt_pack_subset"),
+            )
             row["is_harmful"] = is_harmful
+            row["label_source"] = label_source
 
         if results_path:
             with results_path.open("w", encoding="utf-8") as handle:
@@ -412,7 +561,8 @@ class Evaluator:
         if results:
             row_iter = tqdm(results, desc="judge rows")
 
-        judge_batch_size = int(judge.config.get("judge_batch_size", 8))
+        judge_config = getattr(judge, "config", {}) or {}
+        judge_batch_size = int(judge_config.get("judge_batch_size", 8))
 
         for row in row_iter:
             generations = row.get("generations", []) or []
@@ -421,8 +571,11 @@ class Evaluator:
             raw_outputs: List[str] = []
             judge_usages: List[Optional[Dict[str, Any]]] = []
             judge_costs: List[Optional[float]] = []
+            judge_malformed: List[bool] = []
+            judge_parse_methods: List[str] = []
             safe_count = 0
             unsafe_count = 0
+            unknown_count = 0
 
             system_prompt = row.get("system_prompt") or ""
 
@@ -445,7 +598,9 @@ class Evaluator:
                 ]
 
             for outcome in outcomes:
-                label = str(outcome.get("label") or "unknown")
+                label = str(outcome.get("label") or "unknown").strip().lower()
+                if label not in {"safe", "unsafe"}:
+                    label = "unknown"
                 classifications.append(label)
 
                 reasons = outcome.get("reasons") or []
@@ -455,33 +610,44 @@ class Evaluator:
                 raw_outputs.append(str(outcome.get("raw") or ""))
                 judge_usages.append(outcome.get("usage"))
                 judge_costs.append(outcome.get("cost_usd"))
+                judge_malformed.append(bool(outcome.get("judge_malformed", label == "unknown")))
+                judge_parse_methods.append(str(outcome.get("judge_parse_method") or "failed"))
 
-                if label.lower() == "safe":
+                if label == "safe":
                     safe_count += 1
+                elif label == "unsafe":
+                    unsafe_count += 1
                 else:
+                    unknown_count += 1
                     unsafe_count += 1
 
             row["n_generations"] = len(generations)
             row["safe_count"] = safe_count
             row["unsafe_count"] = unsafe_count
+            row["unknown_count"] = unknown_count
             row["judge_classifications"] = classifications
+            row["judge_labels"] = classifications
             row["judge_failure_reasons"] = failure_reasons
             row["judge_raw_outputs"] = raw_outputs
             row["judge_usage"] = judge_usages
             row["judge_cost_usd"] = judge_costs
+            row["judge_malformed"] = judge_malformed
+            row["judge_parse_method"] = judge_parse_methods
             row["all_classifications"] = classifications
             row["failure_reasons"] = failure_reasons
             row["safety_source"] = "llm_judge"
 
             metadata = row.get("metadata", {}) or {}
-            is_harmful = metadata.get("is_harmful")
-            if is_harmful is None:
-                label = str(metadata.get("label") or "").lower()
-                if label == "safe":
-                    is_harmful = False
-                elif label == "unsafe":
-                    is_harmful = True
+            if "dataset_source" not in row:
+                row["dataset_source"] = str(metadata.get("dataset") or "unknown")
+            is_harmful, label_source = self._resolve_is_harmful(
+                metadata,
+                dataset_source=row.get("dataset_source"),
+                prompt_pack_name=row.get("prompt_pack_name"),
+                prompt_pack_subset=row.get("prompt_pack_subset"),
+            )
             row["is_harmful"] = is_harmful
+            row["label_source"] = label_source
 
         if results_path:
             with results_path.open("w", encoding="utf-8") as handle:

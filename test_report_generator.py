@@ -38,8 +38,9 @@ def test_report_generator_f1_scores(tmp_path: Path) -> None:
     summary = ReportGenerator(output_dir=tmp_path).generate(results)
 
     assert summary["f1_score"] == pytest.approx(0.5)
+    assert summary["scorecards"]["system"]["f1_score"] == pytest.approx(0.5)
     assert summary["per_variant_metrics"]["v1"]["f1_score"] == pytest.approx(2 / 3)
-    assert summary["per_variant_metrics"]["v2"]["f1_score"] == pytest.approx(0.0)
+    assert summary["per_variant_metrics"]["v2"]["f1_score"] is None
 
     csv_path = tmp_path / "variant_metrics.csv"
     assert csv_path.exists()
@@ -84,3 +85,85 @@ def test_report_generator_costs(tmp_path: Path) -> None:
     assert costs["tutor_tokens"] == 10
     assert costs["guardrail_tokens"] == 3
     assert costs["judge_tokens"] == 8
+
+
+def test_report_generator_excludes_malformed_unknown_from_confusion(tmp_path: Path) -> None:
+    results = [
+        {
+            "n_generations": 2,
+            "safe_count": 1,
+            "unsafe_count": 1,
+            "is_harmful": False,
+            "judge_labels": ["unknown", "safe"],
+            "judge_malformed": [True, False],
+            "judge_classifications": ["unknown", "safe"],
+            "judge_failure_reasons": [["Malformed judge response"], []],
+            "metadata": {"variant": "v1"},
+            "generations": [
+                {"raw": {"guardrail_decision_status": "allow"}},
+                {"raw": {"guardrail_decision_status": "allow"}},
+            ],
+        }
+    ]
+
+    summary = ReportGenerator(output_dir=tmp_path, use_judge_results=True).generate(results)
+    system = summary["scorecards"]["system"]
+    assert system["evaluated_generation_count"] == 1
+    assert system["tn"] == 1
+    assert system["fp"] == 0
+    assert summary["coverage"]["judge_malformed_generation_count"] == 1
+
+
+def test_report_generator_dual_scorecards_differ_when_blocked(tmp_path: Path) -> None:
+    results = [
+        {
+            "n_generations": 2,
+            "safe_count": 0,
+            "unsafe_count": 2,
+            "is_harmful": False,
+            "judge_labels": ["unsafe", "unsafe"],
+            "judge_malformed": [False, False],
+            "judge_classifications": ["unsafe", "unsafe"],
+            "judge_failure_reasons": [["x"], ["y"]],
+            "metadata": {"variant": "v1"},
+            "generations": [
+                {"raw": {"guardrail_decision_status": "block", "finish_reason": "guardrail_blocked"}},
+                {"raw": {"guardrail_decision_status": "allow", "finish_reason": "stop"}},
+            ],
+            "guardrail_decisions": [{"status": "block"}, {"status": "allow"}],
+            "guardrail_model": "g1",
+            "guardrail_provider": "local_hf",
+        }
+    ]
+
+    summary = ReportGenerator(output_dir=tmp_path, use_judge_results=True).generate(results)
+    system = summary["scorecards"]["system"]
+    tutor = summary["scorecards"]["tutor_conditional"]
+    assert system["fp"] == 2
+    assert tutor["fp"] == 1
+
+
+def test_report_generator_warnings_for_zero_allow_rate(tmp_path: Path) -> None:
+    results = [
+        {
+            "n_generations": 1,
+            "safe_count": 0,
+            "unsafe_count": 1,
+            "is_harmful": False,
+            "judge_labels": ["unsafe"],
+            "judge_malformed": [False],
+            "judge_classifications": ["unsafe"],
+            "judge_failure_reasons": [["x"]],
+            "metadata": {"variant": "v1"},
+            "generations": [
+                {"raw": {"guardrail_decision_status": "block", "finish_reason": "guardrail_blocked"}},
+            ],
+            "guardrail_decisions": [{"status": "block"}],
+            "guardrail_model": "g1",
+            "guardrail_provider": "local_hf",
+        }
+    ]
+
+    summary = ReportGenerator(output_dir=tmp_path, use_judge_results=True).generate(results)
+    warnings = summary.get("warnings") or []
+    assert any("allow_rate is 0.0" in warning for warning in warnings)
