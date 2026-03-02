@@ -100,6 +100,18 @@ def test_parse_guardrail_decision():
     assert "Empty" in reason
     assert mode == "text"
 
+    status, reason, mode = ModelRunner._parse_guardrail_decision("ALLOWED")
+    assert status == "allow"
+    assert reason is None
+    assert mode == "binary"
+
+    status, reason, mode = ModelRunner._parse_guardrail_decision(
+        "Some preface\nDecision: BLOCK: policy violation"
+    )
+    assert status == "block"
+    assert "policy violation" in (reason or "")
+    assert mode == "binary_embedded"
+
 
 def test_run_blocks_on_guardrail_block(runner, monkeypatch):
     completions = FakeChatCompletions("BLOCK: unsafe")

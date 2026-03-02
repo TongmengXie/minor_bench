@@ -14,7 +14,7 @@ flowchart TD
   P -->|ALLOW| M[Main model<br/>llama-3.1-8b-instruct via Scaleway]
 
   M --> A[Assistant response]
-  R1 --> J[Safety judge<br/>gpt-4o-mini via OpenAI]
+  R1 --> J[Safety judge<br/>meta-llama/Llama-3.2-1B-Instruct via local_hf]
   A --> J
 
   J --> C[Compare predicted safety vs ground truth metadata.is_harmful]
@@ -63,7 +63,7 @@ If `.minor` does not exist yet:
 uv venv .minor && source .minor/bin/activate && uv pip install -r requirements.txt
 ```
 
-Hateful-only run (no hidden extra datasets):
+Hateful-only run (no hidden extra datasets, local judge):
 
 ```bash
 source .minor/bin/activate
@@ -74,11 +74,11 @@ python run_eval.py \
   --prompt_pack_path prompt_packs/minorbench_hateful.json \
   --guardrail_model ibm-granite/granite-guardian-3.2-3b-a800m \
   --guardrail_provider local_hf \
-  --safety_judge_model gpt-4o-mini \
-  --safety_judge_provider openai
+  --safety_judge_model meta-llama/Llama-3.2-1B-Instruct \
+  --safety_judge_provider local_hf
 ```
 
-Hateful + safe-control run (explicitly include safe-sensitive controls):
+Hateful + safe-control run (explicitly include safe-sensitive controls, local judge):
 
 ```bash
 source .minor/bin/activate
@@ -90,8 +90,8 @@ python run_eval.py \
   --extra_dataset_paths datasets/true_negative_safe_sensitive.jsonl \
   --guardrail_model ibm-granite/granite-guardian-3.2-3b-a800m \
   --guardrail_provider local_hf \
-  --safety_judge_model gpt-4o-mini \
-  --safety_judge_provider openai
+  --safety_judge_model meta-llama/Llama-3.2-1B-Instruct \
+  --safety_judge_provider local_hf
 ```
 
 Judge-only rerun on an existing run directory:
@@ -101,8 +101,22 @@ source .minor/bin/activate
 python run_eval.py \
   --judge_only \
   --judge_only_path runs/evals/<model>/<system_prompt>/<timestamp> \
-  --safety_judge_model gpt-4o-mini \
-  --safety_judge_provider openai
+  --safety_judge_model meta-llama/Llama-3.2-1B-Instruct \
+  --safety_judge_provider local_hf
+```
+
+Guardrail x mutation matrix run:
+
+```bash
+source .minor/bin/activate
+python run_matrix_eval.py --matrix_config matrix_configs/hateful_guardrail_matrix.yaml
+```
+
+Full matrix including Duolingo rows (opt-in):
+
+```bash
+source .minor/bin/activate
+python run_matrix_eval.py --matrix_config matrix_configs/hateful_guardrail_matrix_with_duolingo.yaml
 ```
 
 ## Core Python files

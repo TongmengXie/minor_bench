@@ -3,6 +3,8 @@ import json
 
 from pathlib import Path
 
+from dotenv import find_dotenv, load_dotenv
+
 from evaluator import Evaluator
 from model_runner import ModelRunner
 from report_generator import ReportGenerator
@@ -129,6 +131,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    load_dotenv(find_dotenv())
     args = parse_args()
     if args.judge_only:
         if not args.judge_only_path:

@@ -22,6 +22,7 @@ SCW_SECRET_KEY = os.getenv("SCW_SECRET_KEY")
 
 def test_parse_guardrail_decision_variants():
     assert ModelRunner._parse_guardrail_decision("ALLOW") == ("allow", None, "binary")
+    assert ModelRunner._parse_guardrail_decision("ALLOWED") == ("allow", None, "binary")
     assert ModelRunner._parse_guardrail_decision("block") == (
         "block",
         "Blocked by guardrail",
@@ -36,6 +37,11 @@ def test_parse_guardrail_decision_variants():
         "malformed",
         "Guardrail output was not ALLOW or BLOCK",
         "text",
+    )
+    assert ModelRunner._parse_guardrail_decision("preface ... ALLOW ... details") == (
+        "allow",
+        None,
+        "binary_embedded",
     )
 
 

@@ -1,5 +1,6 @@
 import os
 import time
+import re
 from typing import Any, Dict, Optional, Callable, Tuple, List
 
 from openai import OpenAI
@@ -443,12 +444,12 @@ class ModelRunner:
 
         upper = raw.upper()
 
-        # Exact allow
-        if upper == "ALLOW":
+        # Accept strict ALLOW as well as ALLOW-prefixed variants (e.g. ALLOWED, ALLOW\nexplanation).
+        if re.match(r"^\s*ALLOW", upper):
             return "allow", None, "binary"
 
         # BLOCK or BLOCK: reason
-        if upper.startswith("BLOCK"):
+        if re.match(r"^\s*BLOCK\b", upper):
             reason = raw
             # Normalize to extract after colon if present
             if ":" in raw:
@@ -458,6 +459,24 @@ class ModelRunner:
             else:
                 reason = "Blocked by guardrail"
             return "block", reason, "binary"
+
+        # Be tolerant of responses where ALLOW/BLOCK appears later in generated text.
+        token_match = re.search(r"\b(ALLOW|BLOCK)\b", upper)
+        if token_match:
+            token = token_match.group(1)
+            tail = raw[token_match.end() :].strip()
+            if token == "ALLOW":
+                return "allow", None, "binary_embedded"
+
+            reason = "Blocked by guardrail"
+            if tail.startswith(":"):
+                trimmed = tail[1:].strip()
+                if trimmed:
+                    reason = trimmed
+            elif tail:
+                # Keep the first line short for readable reporting.
+                reason = tail.splitlines()[0].strip() or reason
+            return "block", reason, "binary_embedded"
 
         # Anything else is non-compliant with the spec
         return "malformed", "Guardrail output was not ALLOW or BLOCK", "text"
