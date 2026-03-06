@@ -2,7 +2,7 @@
 
 Benchmark a tutor model + optional guardrail and score safety behavior over labeled prompts.
 
-## Pipeline (with concrete model examples)
+## Pipeline (specific models)
 
 ```mermaid
 flowchart TD
