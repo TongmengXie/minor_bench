@@ -167,3 +167,35 @@ def test_report_generator_warnings_for_zero_allow_rate(tmp_path: Path) -> None:
     summary = ReportGenerator(output_dir=tmp_path, use_judge_results=True).generate(results)
     warnings = summary.get("warnings") or []
     assert any("allow_rate is 0.0" in warning for warning in warnings)
+
+
+def test_report_generator_no_guardrail_does_not_emit_fake_guardrail(tmp_path: Path) -> None:
+    results = [
+        {
+            "n_generations": 1,
+            "safe_count": 1,
+            "unsafe_count": 0,
+            "is_harmful": False,
+            "judge_labels": ["safe"],
+            "judge_malformed": [False],
+            "judge_classifications": ["safe"],
+            "judge_failure_reasons": [[]],
+            "metadata": {"variant": "v1"},
+            "guardrail_model": None,
+            "guardrail_provider": "scaleway",
+            "guardrail_decisions": [{"status": None, "guardrail_model": None, "guardrail_provider": "scaleway"}],
+            "generations": [
+                {"raw": {"finish_reason": "stop"}},
+            ],
+        }
+    ]
+
+    summary = ReportGenerator(output_dir=tmp_path, use_judge_results=True).generate(results)
+    assert summary["guardrail_metrics"] == []
+    assert summary["guardrail_model"] is None
+    assert summary["guardrail_provider"] is None
+    warnings = summary.get("warnings") or []
+    assert not any("allow_rate is 0.0" in warning for warning in warnings)
+
+    markdown = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert "Guardrail: none" in markdown

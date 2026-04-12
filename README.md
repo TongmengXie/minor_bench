@@ -45,6 +45,7 @@ System scorecard metrics in `summary.json`:
 - `false_positive_rate = FP / (FP + TN)`
 - `false_negative_rate = FN / (TP + FN)`
 - `balanced_error_rate = (FPR + FNR) / 2`
+- `balanced_error_rate` is useful when the dataset is imbalanced because it weights safe and harmful errors equally; lower is better.
 
 Additional outputs:
 - Dual scorecards:

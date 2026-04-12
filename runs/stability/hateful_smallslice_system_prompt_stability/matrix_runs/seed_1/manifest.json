@@ -1,0 +1,110 @@
+{
+  "matrix_config_path": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/inputs/seed_1/matrix_config.yaml",
+  "created_utc": "2026-04-12T17:23:17+00:00",
+  "cwd": "/root/minor_bench",
+  "repo_root": "/root/minor_bench",
+  "local_hf_judge_enforced": true,
+  "default_local_judge_model": "meta-llama/Llama-3.2-1B-Instruct",
+  "global": {
+    "model_name": "llama-3.1-8b-instruct",
+    "provider": "scaleway",
+    "prompt_pack_path": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/inputs/seed_1/prompt_pack.json",
+    "extra_dataset_paths": [
+      "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/inputs/seed_1/safe_controls.jsonl"
+    ],
+    "k": 3,
+    "batch_size": 8,
+    "include_variants": [],
+    "exclude_variants": [],
+    "safety_judge_model": "meta-llama/Llama-3.2-1B-Instruct",
+    "safety_judge_provider": "local_hf",
+    "config": {
+      "temperature": 0,
+      "max_new_tokens": 96,
+      "judge_temperature": 0,
+      "judge_max_new_tokens": 96,
+      "judge_batch_size": 2,
+      "judge_retry_on_malformed": true,
+      "judge_retry_max_attempts": 1
+    }
+  },
+  "runs": [
+    {
+      "row_id": "system_prompt_generic",
+      "row_label": "system_prompt_generic",
+      "status": "success",
+      "return_code": 0,
+      "started_utc": "2026-04-12T17:23:17+00:00",
+      "ended_utc": "2026-04-12T17:26:04+00:00",
+      "command": [
+        "/root/minor_bench/.minor/bin/python",
+        "/root/minor_bench/run_eval.py",
+        "--model_name",
+        "llama-3.1-8b-instruct",
+        "--provider",
+        "scaleway",
+        "--system_prompt_name",
+        "generic_child_tutor_v1",
+        "--prompt_pack_path",
+        "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/inputs/seed_1/prompt_pack.json",
+        "--safety_judge_model",
+        "meta-llama/Llama-3.2-1B-Instruct",
+        "--safety_judge_provider",
+        "local_hf",
+        "--k",
+        "3",
+        "--batch_size",
+        "8",
+        "--extra_dataset_paths",
+        "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/inputs/seed_1/safe_controls.jsonl",
+        "--config",
+        "{\"temperature\": 0, \"max_new_tokens\": 96, \"judge_temperature\": 0, \"judge_max_new_tokens\": 96, \"judge_batch_size\": 2, \"judge_retry_on_malformed\": true, \"judge_retry_max_attempts\": 1}"
+      ],
+      "run_dir": "runs/evals/llama-31-8b-instruct/generic_child_tutor_v1/20260412_172318",
+      "stdout_path": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_1/rows/system_prompt_generic.stdout.log",
+      "stderr_path": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_1/rows/system_prompt_generic.stderr.log"
+    },
+    {
+      "row_id": "system_prompt_duolingo",
+      "row_label": "system_prompt_duolingo",
+      "status": "success",
+      "return_code": 0,
+      "started_utc": "2026-04-12T17:26:04+00:00",
+      "ended_utc": "2026-04-12T17:29:23+00:00",
+      "command": [
+        "/root/minor_bench/.minor/bin/python",
+        "/root/minor_bench/run_eval.py",
+        "--model_name",
+        "llama-3.1-8b-instruct",
+        "--provider",
+        "scaleway",
+        "--system_prompt_name",
+        "duolingo_tutor_v1",
+        "--prompt_pack_path",
+        "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/inputs/seed_1/prompt_pack.json",
+        "--safety_judge_model",
+        "meta-llama/Llama-3.2-1B-Instruct",
+        "--safety_judge_provider",
+        "local_hf",
+        "--k",
+        "3",
+        "--batch_size",
+        "8",
+        "--extra_dataset_paths",
+        "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/inputs/seed_1/safe_controls.jsonl",
+        "--config",
+        "{\"temperature\": 0, \"max_new_tokens\": 96, \"judge_temperature\": 0, \"judge_max_new_tokens\": 96, \"judge_batch_size\": 2, \"judge_retry_on_malformed\": true, \"judge_retry_max_attempts\": 1}"
+      ],
+      "run_dir": "runs/evals/llama-31-8b-instruct/duolingo_tutor_v1/20260412_172605",
+      "stdout_path": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_1/rows/system_prompt_duolingo.stdout.log",
+      "stderr_path": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_1/rows/system_prompt_duolingo.stderr.log"
+    }
+  ],
+  "aggregation": {
+    "matrix_metrics_csv": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_1/matrix_metrics.csv",
+    "matrix_ber_csv": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_1/matrix_ber.csv",
+    "matrix_f1_csv": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_1/matrix_f1_score.csv",
+    "matrix_report_md": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_1/matrix_report.md"
+  },
+  "completed_utc": "2026-04-12T17:29:23+00:00"
+}

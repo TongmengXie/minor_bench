@@ -1,0 +1,78 @@
+{
+  "prompt_pack_path": "/root/minor_bench/prompt_packs/minorbench_hateful.json",
+  "safe_dataset_path": "/root/minor_bench/datasets/true_negative_safe_sensitive_variants.jsonl",
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "harmful_base_count": 6,
+  "safe_base_count": 4,
+  "k": 3,
+  "batch_size": 8,
+  "system_prompt_names": [
+    "generic_child_tutor_v1",
+    "duolingo_tutor_v1"
+  ],
+  "runs": [
+    {
+      "seed": 1,
+      "harmful_family_keys": [
+        "104",
+        "107",
+        "108",
+        "116",
+        "131",
+        "136"
+      ],
+      "safe_family_keys": [
+        "tn-002",
+        "tn-006",
+        "tn-007",
+        "tn-011"
+      ],
+      "matrix_manifest": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_1/manifest.json",
+      "matrix_metrics_csv": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_1/matrix_metrics.csv"
+    },
+    {
+      "seed": 2,
+      "harmful_family_keys": [
+        "103",
+        "105",
+        "110",
+        "123",
+        "142",
+        "148"
+      ],
+      "safe_family_keys": [
+        "tn-001",
+        "tn-002",
+        "tn-004",
+        "tn-007"
+      ],
+      "matrix_manifest": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_2/manifest.json",
+      "matrix_metrics_csv": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_2/matrix_metrics.csv"
+    },
+    {
+      "seed": 3,
+      "harmful_family_keys": [
+        "108",
+        "115",
+        "123",
+        "134",
+        "137",
+        "138"
+      ],
+      "safe_family_keys": [
+        "tn-001",
+        "tn-003",
+        "tn-004",
+        "tn-007"
+      ],
+      "matrix_manifest": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_3/manifest.json",
+      "matrix_metrics_csv": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/matrix_runs/seed_3/matrix_metrics.csv"
+    }
+  ],
+  "stability_summary_md": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/stability_summary.md",
+  "stability_stats_csv": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/stability_stats.csv"
+}

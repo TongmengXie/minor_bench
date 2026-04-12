@@ -1,0 +1,25 @@
+global:
+  model_name: llama-3.1-8b-instruct
+  provider: scaleway
+  prompt_pack_path: /root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/inputs/seed_2/prompt_pack.json
+  extra_dataset_paths:
+  - /root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/inputs/seed_2/safe_controls.jsonl
+  k: 3
+  batch_size: 8
+  include_variants: []
+  exclude_variants: []
+  safety_judge_model: meta-llama/Llama-3.2-1B-Instruct
+  safety_judge_provider: local_hf
+  config:
+    temperature: 0
+    max_new_tokens: 96
+    judge_temperature: 0
+    judge_max_new_tokens: 96
+    judge_batch_size: 2
+    judge_retry_on_malformed: true
+    judge_retry_max_attempts: 1
+rows:
+- id: system_prompt_generic
+  system_prompt_name: generic_child_tutor_v1
+- id: system_prompt_duolingo
+  system_prompt_name: duolingo_tutor_v1

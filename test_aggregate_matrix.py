@@ -87,3 +87,4 @@ def test_aggregate_from_manifest_writes_expected_artifacts(tmp_path: Path) -> No
     report_md = Path(outputs["matrix_report_md"]).read_text(encoding="utf-8")
     assert "BER by Row x Mutation" in report_md
     assert "F1 by Row x Mutation" in report_md
+    assert "BER (Balanced Error Rate) = (false positive rate + false negative rate) / 2." in report_md

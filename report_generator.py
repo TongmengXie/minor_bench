@@ -17,9 +17,9 @@ class ReportGenerator:
         self.use_judge_results = use_judge_results
 
     @staticmethod
-    def _format_value_list(values: List[str]) -> str:
+    def _format_value_list(values: List[str]) -> Optional[str]:
         if not values:
-            return "unknown"
+            return None
         return ", ".join(values)
 
     @staticmethod
@@ -140,6 +140,8 @@ class ReportGenerator:
                 f"{guardrail_model or 'unknown'}"
                 f" ({guardrail_provider or 'unknown'})"
             )
+        else:
+            lines.append("Guardrail: none")
         lines.append(f"Aggregation unit: {summary.get('aggregation_unit', 'unknown')}")
         lines.append("")
 
@@ -375,8 +377,8 @@ class ReportGenerator:
             row_guardrail_provider = row.get("guardrail_provider")
             if row_guardrail_model:
                 guardrail_models.append(str(row_guardrail_model))
-            if row_guardrail_provider:
-                guardrail_providers.append(str(row_guardrail_provider))
+                if row_guardrail_provider:
+                    guardrail_providers.append(str(row_guardrail_provider))
 
             decisions = row.get("guardrail_decisions") or []
             for decision in decisions:
@@ -389,14 +391,15 @@ class ReportGenerator:
                     decision_model = row_guardrail_model
                     decision_provider = row_guardrail_provider
 
-                if not (decision_model or decision_provider):
+                status_norm = str(status or "").strip().lower()
+                if status_norm not in {"allow", "block", "malformed"}:
+                    continue
+                if not decision_model:
                     continue
 
-                key = (str(decision_model or "unknown"), str(decision_provider or "unknown"))
+                key = (str(decision_model), str(decision_provider or "unknown"))
                 counter = guardrail_counts.setdefault(key, Counter())
-                status_norm = str(status or "").strip().lower()
-                if status_norm in {"allow", "block", "malformed"}:
-                    counter.update([status_norm])
+                counter.update([status_norm])
 
             for generation in row.get("generations", []) or []:
                 raw = generation.get("raw") if isinstance(generation, dict) else {}

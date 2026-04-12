@@ -1,3 +1,11 @@
 .env
 *.pyc
 __pycache__/
+.codex
+.minor/
+.pytest_cache/
+
+# Transient run outputs. Keep curated matrix/stability summaries explicit.
+runs/evals/
+runs/matrix/*/rows/
+runs/stability/*/matrix_runs/*/rows/

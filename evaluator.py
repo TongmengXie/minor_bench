@@ -261,7 +261,7 @@ class Evaluator:
         generations: List[Dict[str, Any]] = []
         guardrail_decisions: List[Dict[str, Any]] = []
         guardrail_model = getattr(model_runner, "guardrail_model", None)
-        guardrail_provider = getattr(model_runner, "guardrail_provider", None)
+        guardrail_provider = getattr(model_runner, "guardrail_provider", None) if guardrail_model else None
         model_name = getattr(model_runner, "model_name", None)
         for i in range(k):
             raw = self._call_model_runner(model_runner, system_prompt, prompt_text)
@@ -402,7 +402,9 @@ class Evaluator:
                 prompt_texts: List[str] = []
                 base_rows: List[Dict[str, Any]] = []
                 guardrail_model = getattr(model_runner, "guardrail_model", None)
-                guardrail_provider = getattr(model_runner, "guardrail_provider", None)
+                guardrail_provider = (
+                    getattr(model_runner, "guardrail_provider", None) if guardrail_model else None
+                )
                 model_name = getattr(model_runner, "model_name", None)
 
                 for prompt_item in batch_items:

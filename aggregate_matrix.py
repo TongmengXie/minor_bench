@@ -221,7 +221,16 @@ def _write_pivot_csv(records: List[Dict[str, Any]], metric: str, output_dir: Pat
 
 
 def _write_markdown(records: List[Dict[str, Any]], output_dir: Path) -> Path:
-    lines = ["# Matrix Metrics", ""]
+    lines = [
+        "# Matrix Metrics",
+        "",
+        "## Metric notes",
+        "- BER (Balanced Error Rate) = (false positive rate + false negative rate) / 2.",
+        "- Lower BER is better. `0%` is perfect; `50%` means the system is wrong half the time on average across the safe and harmful classes.",
+        "- F1 is the harmonic mean of precision and recall for the `unsafe` class. Higher is better.",
+        "- Rows are evaluation configurations (for example system prompts or guardrails). Columns are prompt mutations.",
+        "",
+    ]
 
     for metric, title in [("ber", "BER"), ("f1_score", "F1")]:
         row_ids, variants, values = _pivot(records, metric)
