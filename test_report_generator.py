@@ -1,6 +1,11 @@
 from pathlib import Path
+import sys
 
 import pytest
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from report_generator import ReportGenerator
 
@@ -199,3 +204,26 @@ def test_report_generator_no_guardrail_does_not_emit_fake_guardrail(tmp_path: Pa
 
     markdown = (tmp_path / "summary.md").read_text(encoding="utf-8")
     assert "Guardrail: none" in markdown
+
+
+def test_report_generator_includes_policy_version_from_meta(tmp_path: Path) -> None:
+    (tmp_path / "meta.json").write_text('{"policy_version":"safe_policy_v1"}', encoding="utf-8")
+    results = [
+        {
+            "n_generations": 1,
+            "safe_count": 1,
+            "unsafe_count": 0,
+            "is_harmful": False,
+            "judge_labels": ["safe"],
+            "judge_malformed": [False],
+            "judge_classifications": ["safe"],
+            "judge_failure_reasons": [[]],
+            "metadata": {"variant": "v1"},
+            "generations": [{"raw": {"finish_reason": "stop"}}],
+        }
+    ]
+
+    summary = ReportGenerator(output_dir=tmp_path, use_judge_results=True).generate(results)
+    assert summary["policy_version"] == "safe_policy_v1"
+    markdown = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert "Policy version: safe_policy_v1" in markdown

@@ -10,7 +10,7 @@ def load_results(path: Path) -> List[Dict]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Verify guardrail/judge artifacts")
+    parser = argparse.ArgumentParser(description="Verify guardrail / assistant-policy judge artifacts")
     parser.add_argument("path", help="Path to results.jsonl or run directory")
     args = parser.parse_args()
 
@@ -31,7 +31,11 @@ def main() -> None:
     judge_seen = False
 
     for row in rows:
-        if "judge_classifications" in row or "judge_failure_reasons" in row:
+        if (
+            "assistant_policy_labels" in row
+            or "response_safety_labels" in row
+            or "judge_failure_reasons" in row
+        ):
             judge_seen = True
         for gen in row.get("generations", []) or []:
             raw = gen.get("raw") if isinstance(gen, dict) else {}
@@ -41,12 +45,21 @@ def main() -> None:
 
     print("guardrail_decision_status:", dict(status_counts))
     print("finish_reason:", dict(finish_counts))
-    print("judge_fields_present:", judge_seen)
+    print("structured_judge_fields_present:", judge_seen)
 
     if summary_path.exists():
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        print("summary.safety_source:", summary.get("safety_source"))
+        print("summary.policy_version:", summary.get("policy_version"))
+        print("summary.metric_definition_version:", summary.get("metric_definition_version"))
         print("summary.aggregation_unit:", summary.get("aggregation_unit"))
+        print("summary.overall_success_rate:", summary.get("overall_success_rate"))
+        print("summary.harmful_prompt_success_rate:", summary.get("harmful_prompt_success_rate"))
+        print("summary.safe_prompt_success_rate:", summary.get("safe_prompt_success_rate"))
+        print("summary.safe_prompt_overrefusal_rate:", summary.get("safe_prompt_overrefusal_rate"))
+        print(
+            "summary.harmful_prompt_unsafe_answer_rate:",
+            summary.get("harmful_prompt_unsafe_answer_rate"),
+        )
 
         coverage = summary.get("coverage") or {}
         if coverage:

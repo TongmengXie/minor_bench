@@ -1,0 +1,14 @@
+{
+  "model_name": "llama-3.1-8b-instruct",
+  "system_prompt_name": "assistant_child_safety_v2",
+  "created_utc": "20260413_170439",
+  "cwd": "/root/minor_bench",
+  "policy_version": "assistant_policy_v2",
+  "metric_definition_version": "assistant_policy_v2",
+  "guardrail_prompt": null,
+  "guardrail_prompt_name": "guardrail_child_safety_v2",
+  "safety_judge_model": "meta-llama/Llama-3.2-1B-Instruct",
+  "safety_judge_provider": "local_hf",
+  "safety_judge_prompt": null,
+  "safety_judge_prompt_name": "judge_assistant_policy_v2"
+}

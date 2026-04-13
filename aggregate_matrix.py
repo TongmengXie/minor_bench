@@ -2,7 +2,9 @@ import argparse
 import csv
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from assistant_policy import METRIC_DEFINITION_VERSION
 
 
 def _parse_optional_float(value: Any) -> Optional[float]:
@@ -31,6 +33,12 @@ def _parse_optional_int(value: Any) -> Optional[int]:
         return None
 
 
+def _compute_ber(false_positive_rate: Optional[float], false_negative_rate: Optional[float]) -> Optional[float]:
+    if false_positive_rate is None or false_negative_rate is None:
+        return None
+    return (false_positive_rate + false_negative_rate) / 2.0
+
+
 def _load_summary(run_dir: Path) -> Dict[str, Any]:
     summary_path = run_dir / "summary.json"
     if not summary_path.exists():
@@ -47,11 +55,24 @@ def _load_variant_metrics(run_dir: Path, summary: Dict[str, Any]) -> Dict[str, D
             for row in reader:
                 variant = str(row.get("variant") or "unknown")
                 out[variant] = {
+                    "balanced_error_rate": _parse_optional_float(row.get("balanced_error_rate")),
                     "false_positive_rate": _parse_optional_float(row.get("false_positive_rate")),
                     "false_negative_rate": _parse_optional_float(row.get("false_negative_rate")),
                     "f1_score": _parse_optional_float(row.get("f1_score")),
                     "precision": _parse_optional_float(row.get("precision")),
                     "recall": _parse_optional_float(row.get("recall")),
+                    "harmful_prompt_success_rate": _parse_optional_float(
+                        row.get("harmful_prompt_success_rate")
+                    ),
+                    "safe_prompt_success_rate": _parse_optional_float(
+                        row.get("safe_prompt_success_rate")
+                    ),
+                    "safe_prompt_overrefusal_rate": _parse_optional_float(
+                        row.get("safe_prompt_overrefusal_rate")
+                    ),
+                    "harmful_prompt_unsafe_answer_rate": _parse_optional_float(
+                        row.get("harmful_prompt_unsafe_answer_rate")
+                    ),
                     "false_positives": _parse_optional_int(row.get("false_positives")) or 0,
                     "false_negatives": _parse_optional_int(row.get("false_negatives")) or 0,
                     "true_positives": _parse_optional_int(row.get("true_positives")) or 0,
@@ -59,20 +80,15 @@ def _load_variant_metrics(run_dir: Path, summary: Dict[str, Any]) -> Dict[str, D
                     "safe_support": _parse_optional_int(row.get("safe_support")) or 0,
                     "harmful_support": _parse_optional_int(row.get("harmful_support")) or 0,
                 }
+                if out[variant]["balanced_error_rate"] is None:
+                    out[variant]["balanced_error_rate"] = _compute_ber(
+                        out[variant]["false_positive_rate"],
+                        out[variant]["false_negative_rate"],
+                    )
             return out
 
-    # Fallback if CSV is missing.
     fallback = summary.get("per_variant_metrics") or {}
-    out = {}
-    for variant, metrics in fallback.items():
-        out[str(variant)] = dict(metrics)
-    return out
-
-
-def _compute_ber(false_positive_rate: Optional[float], false_negative_rate: Optional[float]) -> Optional[float]:
-    if false_positive_rate is None or false_negative_rate is None:
-        return None
-    return (false_positive_rate + false_negative_rate) / 2.0
+    return {str(variant): dict(metrics) for variant, metrics in fallback.items()}
 
 
 def _format_value(value: Optional[float]) -> str:
@@ -101,8 +117,10 @@ def _allow_rate(summary: Dict[str, Any]) -> Optional[float]:
     return sum(values) / len(values)
 
 
-def _collect_records(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _collect_records(manifest: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
     records: List[Dict[str, Any]] = []
+    metric_versions = set()
+
     for run in manifest.get("runs", []):
         if run.get("status") != "success":
             continue
@@ -112,24 +130,34 @@ def _collect_records(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
 
         summary = _load_summary(run_dir)
+        metric_version = str(summary.get("metric_definition_version") or "legacy").strip()
+        metric_versions.add(metric_version)
         variant_metrics = _load_variant_metrics(run_dir, summary)
         allow_rate = _allow_rate(summary)
         system_card = (summary.get("scorecards") or {}).get("system") or {}
         tutor_card = (summary.get("scorecards") or {}).get("tutor_conditional") or {}
 
         for variant, metrics in variant_metrics.items():
-            fpr = _parse_optional_float(metrics.get("false_positive_rate"))
-            fnr = _parse_optional_float(metrics.get("false_negative_rate"))
             record = {
                 "row_id": run.get("row_id"),
                 "row_label": run.get("row_label") or run.get("row_id"),
                 "variant": variant,
-                "ber": _compute_ber(fpr, fnr),
+                "ber": _parse_optional_float(metrics.get("balanced_error_rate")),
                 "f1_score": _parse_optional_float(metrics.get("f1_score")),
                 "precision": _parse_optional_float(metrics.get("precision")),
                 "recall": _parse_optional_float(metrics.get("recall")),
-                "false_positive_rate": fpr,
-                "false_negative_rate": fnr,
+                "false_positive_rate": _parse_optional_float(metrics.get("false_positive_rate")),
+                "false_negative_rate": _parse_optional_float(metrics.get("false_negative_rate")),
+                "harmful_prompt_success_rate": _parse_optional_float(
+                    metrics.get("harmful_prompt_success_rate")
+                ),
+                "safe_prompt_success_rate": _parse_optional_float(metrics.get("safe_prompt_success_rate")),
+                "safe_prompt_overrefusal_rate": _parse_optional_float(
+                    metrics.get("safe_prompt_overrefusal_rate")
+                ),
+                "harmful_prompt_unsafe_answer_rate": _parse_optional_float(
+                    metrics.get("harmful_prompt_unsafe_answer_rate")
+                ),
                 "false_positives": _parse_optional_int(metrics.get("false_positives")) or 0,
                 "false_negatives": _parse_optional_int(metrics.get("false_negatives")) or 0,
                 "true_positives": _parse_optional_int(metrics.get("true_positives")) or 0,
@@ -140,11 +168,24 @@ def _collect_records(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "system_f1": _parse_optional_float(system_card.get("f1_score")),
                 "tutor_conditional_f1": _parse_optional_float(tutor_card.get("f1_score")),
                 "run_dir": str(run_dir),
+                "metric_definition_version": metric_version,
             }
             records.append(record)
 
+    if len(metric_versions) > 1:
+        raise RuntimeError(
+            "Matrix aggregation found mixed metric_definition_version values: "
+            + ", ".join(sorted(metric_versions))
+        )
+    metric_version = next(iter(metric_versions), "legacy")
+    if metric_version != METRIC_DEFINITION_VERSION:
+        raise RuntimeError(
+            "Matrix aggregation requires assistant-policy metrics. "
+            f"Found metric_definition_version={metric_version!r}."
+        )
+
     records.sort(key=lambda row: (str(row["row_id"]), str(row["variant"])))
-    return records
+    return records, metric_version
 
 
 def _write_long_csv(records: List[Dict[str, Any]], output_dir: Path) -> Path:
@@ -153,12 +194,17 @@ def _write_long_csv(records: List[Dict[str, Any]], output_dir: Path) -> Path:
         "row_id",
         "row_label",
         "variant",
+        "metric_definition_version",
         "ber",
         "f1_score",
         "precision",
         "recall",
         "false_positive_rate",
         "false_negative_rate",
+        "harmful_prompt_success_rate",
+        "safe_prompt_success_rate",
+        "safe_prompt_overrefusal_rate",
+        "harmful_prompt_unsafe_answer_rate",
         "false_positives",
         "false_negatives",
         "true_positives",
@@ -182,6 +228,10 @@ def _write_long_csv(records: List[Dict[str, Any]], output_dir: Path) -> Path:
                 "recall",
                 "false_positive_rate",
                 "false_negative_rate",
+                "harmful_prompt_success_rate",
+                "safe_prompt_success_rate",
+                "safe_prompt_overrefusal_rate",
+                "harmful_prompt_unsafe_answer_rate",
                 "allow_rate",
                 "system_f1",
                 "tutor_conditional_f1",
@@ -220,19 +270,27 @@ def _write_pivot_csv(records: List[Dict[str, Any]], metric: str, output_dir: Pat
     return path
 
 
-def _write_markdown(records: List[Dict[str, Any]], output_dir: Path) -> Path:
+def _write_markdown(records: List[Dict[str, Any]], output_dir: Path, metric_definition_version: str) -> Path:
     lines = [
         "# Matrix Metrics",
         "",
+        f"Metric definition version: `{metric_definition_version}`",
+        "",
         "## Metric notes",
-        "- BER (Balanced Error Rate) = (false positive rate + false negative rate) / 2.",
-        "- Lower BER is better. `0%` is perfect; `50%` means the system is wrong half the time on average across the safe and harmful classes.",
-        "- F1 is the harmonic mean of precision and recall for the `unsafe` class. Higher is better.",
-        "- Rows are evaluation configurations (for example system prompts or guardrails). Columns are prompt mutations.",
+        "- BER and F1 are computed from the assistant-policy confusion matrix.",
+        "- TP/FN are harmful prompts handled correctly/incorrectly; TN/FP are safe prompts handled correctly/incorrectly.",
+        "- BER averages failure on harmful prompts and failure on safe prompts equally; lower is better.",
+        "- F1 is retained as a derived continuity metric; the more interpretable product metrics are harmful prompt success rate and safe prompt success rate.",
+        "- Rows are evaluation configurations. Columns are prompt mutations.",
         "",
     ]
 
-    for metric, title in [("ber", "BER"), ("f1_score", "F1")]:
+    for metric, title in [
+        ("ber", "BER"),
+        ("f1_score", "F1"),
+        ("harmful_prompt_success_rate", "Harmful Prompt Success Rate"),
+        ("safe_prompt_success_rate", "Safe Prompt Success Rate"),
+    ]:
         row_ids, variants, values = _pivot(records, metric)
         lines.append(f"## {title} by Row x Mutation")
         lines.append("| Row | " + " | ".join(variants) + " |")
@@ -252,19 +310,23 @@ def aggregate_from_manifest(manifest_path: Path, output_dir: Optional[Path] = No
     out_dir = output_dir or manifest_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    records = _collect_records(manifest)
+    records, metric_definition_version = _collect_records(manifest)
     if not records:
         raise RuntimeError("No successful run records available for matrix aggregation.")
 
     long_csv = _write_long_csv(records, out_dir)
     ber_csv = _write_pivot_csv(records, "ber", out_dir)
     f1_csv = _write_pivot_csv(records, "f1_score", out_dir)
-    report_md = _write_markdown(records, out_dir)
+    harmful_success_csv = _write_pivot_csv(records, "harmful_prompt_success_rate", out_dir)
+    safe_success_csv = _write_pivot_csv(records, "safe_prompt_success_rate", out_dir)
+    report_md = _write_markdown(records, out_dir, metric_definition_version)
 
     return {
         "matrix_metrics_csv": str(long_csv),
         "matrix_ber_csv": str(ber_csv),
         "matrix_f1_csv": str(f1_csv),
+        "matrix_harmful_prompt_success_rate_csv": str(harmful_success_csv),
+        "matrix_safe_prompt_success_rate_csv": str(safe_success_csv),
         "matrix_report_md": str(report_md),
     }
 

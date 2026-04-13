@@ -5,6 +5,11 @@ from typing import Any, Dict, Optional, Callable, Tuple, List
 
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
+from system_prompts import (
+    DEFAULT_GUARDRAIL_PROMPT_NAME,
+    DEFAULT_POLICY_VERSION,
+    resolve_prompt,
+)
 
 ProviderFactory = Callable[[Dict[str, Any]], OpenAI]
 
@@ -113,15 +118,11 @@ class ModelRunner:
 
             self.guardrail_model = self.local_guardrail_models[0]
         
-        self.guardrail_prompt = self.config.get(
-            "guardrail_prompt",
-            (
-                "You are a safety guardrail classifier for a child-focused education assistant. "
-                "Return ALLOW if the input is safe for kids. "
-                "Return BLOCK: <brief reason> if any harmful, explicit, hateful, violent, "
-                "privacy-invasive, or self-harm content appears. "
-                "Keep the response to a single short line. Default to blocking if uncertain."
-            ),
+        self.policy_version = self.config.get("policy_version", DEFAULT_POLICY_VERSION)
+        self.guardrail_prompt, self.guardrail_prompt_name, self.guardrail_prompt_source = resolve_prompt(
+            raw_prompt=self.config.get("guardrail_prompt"),
+            prompt_name=self.config.get("guardrail_prompt_name"),
+            default_prompt_name=DEFAULT_GUARDRAIL_PROMPT_NAME,
         )
 
         self._generator = None  # HF pipeline instance

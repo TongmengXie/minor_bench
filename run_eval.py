@@ -5,11 +5,13 @@ from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
+from assistant_policy import METRIC_DEFINITION_VERSION
 from evaluator import Evaluator
 from model_runner import ModelRunner
 from report_generator import ReportGenerator
 from safety_classifier import SafetyClassifier
 from safety_judge import LLMJudge
+from system_prompts import DEFAULT_JUDGE_PROMPT_NAME, DEFAULT_POLICY_VERSION
 
 
 def _print_run_configuration(
@@ -21,6 +23,10 @@ def _print_run_configuration(
     guardrail_provider: str | None,
     safety_judge_model: str | None,
     safety_judge_provider: str | None,
+    guardrail_prompt_name: str | None,
+    safety_judge_prompt_name: str | None,
+    policy_version: str | None,
+    metric_definition_version: str | None,
     prompt_pack_path: str | None,
     extra_dataset_paths: list[str] | None,
     include_variants: list[str] | None,
@@ -32,8 +38,12 @@ def _print_run_configuration(
         "provider": provider,
         "guardrail_model": guardrail_model,
         "guardrail_provider": guardrail_provider,
+        "guardrail_prompt_name": guardrail_prompt_name,
         "safety_judge_model": safety_judge_model,
         "safety_judge_provider": safety_judge_provider,
+        "safety_judge_prompt_name": safety_judge_prompt_name,
+        "policy_version": policy_version,
+        "metric_definition_version": metric_definition_version,
         "prompt_pack_path": prompt_pack_path,
         "extra_dataset_paths": extra_dataset_paths or [],
         "include_variants": include_variants or [],
@@ -86,6 +96,12 @@ def parse_args() -> argparse.Namespace:
         help="Override the default system prompt used for guardrail classification",
     )
     parser.add_argument(
+        "--guardrail_prompt_name",
+        type=str,
+        default=None,
+        help="Named guardrail prompt from system_prompts.yaml",
+    )
+    parser.add_argument(
         "--include_variants",
         type=str,
         default=None,
@@ -115,6 +131,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Override the default system prompt used for the LLM safety judge.",
+    )
+    parser.add_argument(
+        "--safety_judge_prompt_name",
+        type=str,
+        default=None,
+        help="Named judge prompt from system_prompts.yaml",
     )
     parser.add_argument(
         "--judge_only",
@@ -161,6 +183,8 @@ def main() -> None:
         config["guardrail_provider"] = args.guardrail_provider
     if args.guardrail_prompt:
         config["guardrail_prompt"] = args.guardrail_prompt
+    if args.guardrail_prompt_name:
+        config["guardrail_prompt_name"] = args.guardrail_prompt_name
 
     if args.safety_judge_model:
         config["safety_judge_model"] = args.safety_judge_model
@@ -168,6 +192,12 @@ def main() -> None:
         config["safety_judge_provider"] = args.safety_judge_provider
     if args.safety_judge_prompt:
         config["safety_judge_prompt"] = args.safety_judge_prompt
+    if args.safety_judge_prompt_name:
+        config["safety_judge_prompt_name"] = args.safety_judge_prompt_name
+    config.setdefault("policy_version", DEFAULT_POLICY_VERSION)
+    config.setdefault("metric_definition_version", METRIC_DEFINITION_VERSION)
+    if args.safety_judge_model and not config.get("safety_judge_prompt") and not config.get("safety_judge_prompt_name"):
+        config["safety_judge_prompt_name"] = DEFAULT_JUDGE_PROMPT_NAME
 
 
     include_variants = args.include_variants.split(",") if args.include_variants else None
@@ -187,8 +217,12 @@ def main() -> None:
         provider=args.provider,
         guardrail_model=config.get("guardrail_model"),
         guardrail_provider=config.get("guardrail_provider"),
+        guardrail_prompt_name=config.get("guardrail_prompt_name"),
         safety_judge_model=config.get("safety_judge_model"),
         safety_judge_provider=config.get("safety_judge_provider"),
+        safety_judge_prompt_name=config.get("safety_judge_prompt_name"),
+        policy_version=config.get("policy_version"),
+        metric_definition_version=config.get("metric_definition_version"),
         prompt_pack_path=args.prompt_pack_path,
         extra_dataset_paths=extra_dataset_paths,
         include_variants=include_variants,
@@ -233,9 +267,12 @@ def main() -> None:
             results_path=output_dir / "results.jsonl",
         )
         judge_meta = {
+            "policy_version": config.get("policy_version"),
+            "metric_definition_version": config.get("metric_definition_version"),
             "safety_judge_model": judge_model,
             "safety_judge_provider": config.get("safety_judge_provider", "auto"),
             "safety_judge_prompt": config.get("safety_judge_prompt"),
+            "safety_judge_prompt_name": getattr(judge, "prompt_name", None),
         }
         meta_path = output_dir / "meta.json"
         if meta_path.exists():
@@ -245,19 +282,29 @@ def main() -> None:
         summary = ReportGenerator(output_dir=output_dir, use_judge_results=True).generate(results)
         if summary.get("safety_source") != "llm_judge":
             summary["safety_source"] = "llm_judge"
-            (output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            ReportGenerator(output_dir=output_dir, use_judge_results=True).write_summary_files(summary)
         print(f"Judge-only re-eval completed. Output: {output_dir}")
         return
 
     model_runner = ModelRunner(args.model_name, args.provider, config=config)
     model_runner.judge_meta = (
         {
+            "policy_version": config.get("policy_version"),
+            "metric_definition_version": config.get("metric_definition_version"),
+            "guardrail_prompt": config.get("guardrail_prompt"),
+            "guardrail_prompt_name": getattr(model_runner, "guardrail_prompt_name", None),
             "safety_judge_model": judge_model,
             "safety_judge_provider": config.get("safety_judge_provider", "auto"),
             "safety_judge_prompt": config.get("safety_judge_prompt"),
+            "safety_judge_prompt_name": config.get("safety_judge_prompt_name") or DEFAULT_JUDGE_PROMPT_NAME,
         }
         if use_judge
-        else None
+        else {
+            "policy_version": config.get("policy_version"),
+            "metric_definition_version": config.get("metric_definition_version"),
+            "guardrail_prompt": config.get("guardrail_prompt"),
+            "guardrail_prompt_name": getattr(model_runner, "guardrail_prompt_name", None),
+        }
     )
     results, output_dir = evaluator.evaluate_pack(
         model_runner,

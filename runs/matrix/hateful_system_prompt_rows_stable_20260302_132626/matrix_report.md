@@ -1,4 +1,9 @@
-# Matrix Metrics
+# Legacy Matrix Metrics
+
+Legacy note:
+- This file was generated before the assistant-policy migration.
+- The BER and F1 values below use the old unsafe-class metric definition, not `assistant_policy_v2`.
+- Keep it only for reproducibility; do not use it as current evidence.
 
 ## Metric notes
 - BER (Balanced Error Rate) = (false positive rate + false negative rate) / 2.

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from aggregate_matrix import aggregate_from_manifest
+from assistant_policy import METRIC_DEFINITION_VERSION
 
 DEFAULT_LOCAL_JUDGE_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
 
@@ -194,6 +195,7 @@ def main() -> None:
         "created_utc": _utc_now(),
         "cwd": str(Path.cwd()),
         "repo_root": str(repo_root),
+        "metric_definition_version": METRIC_DEFINITION_VERSION,
         "local_hf_judge_enforced": True,
         "default_local_judge_model": DEFAULT_LOCAL_JUDGE_MODEL,
         "global": global_cfg,

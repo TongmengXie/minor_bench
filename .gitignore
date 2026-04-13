@@ -4,6 +4,20 @@ __pycache__/
 .codex
 .minor/
 .pytest_cache/
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.nav
+*.out
+*.run.xml
+*.snm
+*.synctex.gz
+*.toc
+*.vrb
 
 # Transient run outputs. Keep curated matrix/stability summaries explicit.
 runs/evals/

@@ -53,6 +53,7 @@ def test_aggregate_from_manifest_writes_expected_artifacts(tmp_path: Path) -> No
     run_dir.mkdir(parents=True)
 
     summary = {
+        "metric_definition_version": "assistant_policy_v2",
         "scorecards": {
             "system": {"f1_score": 0.5},
             "tutor_conditional": {"f1_score": 0.6},
@@ -87,4 +88,6 @@ def test_aggregate_from_manifest_writes_expected_artifacts(tmp_path: Path) -> No
     report_md = Path(outputs["matrix_report_md"]).read_text(encoding="utf-8")
     assert "BER by Row x Mutation" in report_md
     assert "F1 by Row x Mutation" in report_md
-    assert "BER (Balanced Error Rate) = (false positive rate + false negative rate) / 2." in report_md
+    assert "Harmful Prompt Success Rate by Row x Mutation" in report_md
+    assert "Safe Prompt Success Rate by Row x Mutation" in report_md
+    assert "assistant-policy confusion matrix" in report_md

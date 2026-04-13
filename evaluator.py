@@ -4,10 +4,16 @@ import json
 import os
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
+from assistant_policy import (
+    derive_assistant_policy_label,
+    infer_answer_mode,
+    normalize_prompt_label,
+    normalize_response_safety_label,
+)
 from tqdm import tqdm
 from safety_classifier import SafetyClassifier
 from safety_judge import LLMJudge
@@ -45,7 +51,7 @@ class Evaluator:
         system_prompt_name: str,
         judge_meta: Optional[Dict[str, Any]] = None,
     ) -> Path:
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         model_part = self._slug(model_name)
         prompt_part = self._slug(system_prompt_name)
 
@@ -138,6 +144,18 @@ class Evaluator:
             return True, "inferred_hateful"
 
         return None, "unknown"
+
+    @staticmethod
+    def _final_response_source_for_generation(generation: Dict[str, Any]) -> str:
+        raw = generation.get("raw") if isinstance(generation, dict) else {}
+        if isinstance(raw, dict):
+            finish_reason = str(raw.get("finish_reason") or "").strip().lower()
+            status = str(raw.get("guardrail_decision_status") or "").strip().lower()
+            if finish_reason == "guardrail_blocked":
+                return "guardrail_block"
+            if status == "block":
+                return "guardrail_block"
+        return "assistant_generation"
 
     def _write_data_manifest(
         self,
@@ -502,9 +520,25 @@ class Evaluator:
             generations = row.get("generations", []) or []
             classifications: List[str] = []
             failure_reasons: List[List[str]] = []
+            assistant_policy_labels: List[str] = []
+            response_safety_labels: List[str] = []
+            answer_mode_labels: List[str] = []
+            assistant_policy_reasons: List[List[str]] = []
             safe_count = 0
             unsafe_count = 0
             unknown_count = 0
+
+            metadata = row.get("metadata", {}) or {}
+            if "dataset_source" not in row:
+                row["dataset_source"] = str(metadata.get("dataset") or "unknown")
+            is_harmful, label_source = self._resolve_is_harmful(
+                metadata,
+                dataset_source=row.get("dataset_source"),
+                prompt_pack_name=row.get("prompt_pack_name"),
+                prompt_pack_subset=row.get("prompt_pack_subset"),
+            )
+            row["is_harmful"] = is_harmful
+            row["label_source"] = label_source
 
             for generation in generations:
                 text = self._extract_generation_text(generation)
@@ -518,6 +552,18 @@ class Evaluator:
                 if not isinstance(reasons, list):
                     reasons = [str(reasons)]
                 failure_reasons.append([str(reason) for reason in reasons])
+
+                response_safety_labels.append(label)
+                final_response_source = self._final_response_source_for_generation(generation)
+                answer_mode = infer_answer_mode(text, final_response_source)
+                assistant_policy_label = derive_assistant_policy_label(
+                    prompt_label=is_harmful,
+                    response_safety_label=label,
+                    answer_mode=answer_mode,
+                )
+                answer_mode_labels.append(answer_mode)
+                assistant_policy_labels.append(assistant_policy_label)
+                assistant_policy_reasons.append([str(reason) for reason in reasons])
 
                 if label == "safe":
                     safe_count += 1
@@ -533,18 +579,10 @@ class Evaluator:
             row["unknown_count"] = unknown_count
             row["all_classifications"] = classifications
             row["failure_reasons"] = failure_reasons
-
-            metadata = row.get("metadata", {}) or {}
-            if "dataset_source" not in row:
-                row["dataset_source"] = str(metadata.get("dataset") or "unknown")
-            is_harmful, label_source = self._resolve_is_harmful(
-                metadata,
-                dataset_source=row.get("dataset_source"),
-                prompt_pack_name=row.get("prompt_pack_name"),
-                prompt_pack_subset=row.get("prompt_pack_subset"),
-            )
-            row["is_harmful"] = is_harmful
-            row["label_source"] = label_source
+            row["response_safety_labels"] = response_safety_labels
+            row["answer_mode_labels"] = answer_mode_labels
+            row["assistant_policy_labels"] = assistant_policy_labels
+            row["assistant_policy_reasons"] = assistant_policy_reasons
 
         if results_path:
             with results_path.open("w", encoding="utf-8") as handle:
@@ -559,17 +597,84 @@ class Evaluator:
         judge: LLMJudge,
         results_path: Optional[Path] = None,
     ) -> List[Dict[str, Any]]:
-        row_iter = results
-        if results:
-            row_iter = tqdm(results, desc="judge rows")
-
         judge_config = getattr(judge, "config", {}) or {}
         judge_batch_size = int(judge_config.get("judge_batch_size", 8))
+        flattened: List[Dict[str, Any]] = []
 
-        for row in row_iter:
+        for row_index, row in enumerate(results):
             generations = row.get("generations", []) or []
+            metadata = row.get("metadata", {}) or {}
+            if "dataset_source" not in row:
+                row["dataset_source"] = str(metadata.get("dataset") or "unknown")
+            is_harmful, label_source = self._resolve_is_harmful(
+                metadata,
+                dataset_source=row.get("dataset_source"),
+                prompt_pack_name=row.get("prompt_pack_name"),
+                prompt_pack_subset=row.get("prompt_pack_subset"),
+            )
+            row["is_harmful"] = is_harmful
+            row["label_source"] = label_source
+            prompt_label = normalize_prompt_label(is_harmful)
+            user_prompt = row.get("prompt_text") or ""
+
+            for generation_index, generation in enumerate(generations):
+                flattened.append(
+                    {
+                        "row_index": row_index,
+                        "generation_index": generation_index,
+                        "user_prompt": user_prompt,
+                        "response_text": self._extract_generation_text(generation),
+                        "prompt_label": prompt_label,
+                        "final_response_source": self._final_response_source_for_generation(generation),
+                    }
+                )
+
+        outcomes_by_row: Dict[int, List[Dict[str, Any]]] = {
+            row_index: [] for row_index in range(len(results))
+        }
+
+        if flattened:
+            if getattr(judge, "provider", None) == "local_hf" and hasattr(judge, "judge_batch"):
+                flat_iter = range(0, len(flattened), judge_batch_size)
+                if flattened:
+                    flat_iter = tqdm(flat_iter, desc="judge rows")
+                for start in flat_iter:
+                    chunk = flattened[start : start + judge_batch_size]
+                    chunk_outcomes = judge.judge_batch(
+                        [item["user_prompt"] for item in chunk],
+                        [item["response_text"] for item in chunk],
+                        [item["prompt_label"] for item in chunk],
+                        [item["final_response_source"] for item in chunk],
+                    )
+                    for item, outcome in zip(chunk, chunk_outcomes):
+                        outcomes_by_row[item["row_index"]].append(outcome)
+            else:
+                row_iter = results
+                if results:
+                    row_iter = tqdm(results, desc="judge rows")
+                for row_index, row in enumerate(row_iter):
+                    generations = row.get("generations", []) or []
+                    user_prompt = row.get("prompt_text") or ""
+                    prompt_label = normalize_prompt_label(row.get("is_harmful"))
+                    for generation in generations:
+                        outcomes_by_row[row_index].append(
+                            judge.judge(
+                                user_prompt=user_prompt,
+                                response_text=self._extract_generation_text(generation),
+                                prompt_label=prompt_label,
+                                final_response_source=self._final_response_source_for_generation(generation),
+                            )
+                        )
+
+        for row_index, row in enumerate(results):
+            generations = row.get("generations", []) or []
+            outcomes = outcomes_by_row.get(row_index, [])
             classifications: List[str] = []
             failure_reasons: List[List[str]] = []
+            assistant_policy_labels: List[str] = []
+            response_safety_labels: List[str] = []
+            answer_mode_labels: List[str] = []
+            assistant_policy_reasons: List[List[str]] = []
             raw_outputs: List[str] = []
             judge_usages: List[Optional[Dict[str, Any]]] = []
             judge_costs: List[Optional[float]] = []
@@ -579,41 +684,29 @@ class Evaluator:
             unsafe_count = 0
             unknown_count = 0
 
-            system_prompt = row.get("system_prompt") or ""
-
-            if (
-                getattr(judge, "provider", None) == "local_hf"
-                and hasattr(judge, "judge_batch")
-                and generations
-            ):
-                texts = [self._extract_generation_text(g) for g in generations]
-                system_prompts = [system_prompt] * len(texts)
-                outcomes: List[Dict[str, Any]] = []
-                for start in range(0, len(texts), judge_batch_size):
-                    chunk_texts = texts[start : start + judge_batch_size]
-                    chunk_systems = system_prompts[start : start + judge_batch_size]
-                    outcomes.extend(judge.judge_batch(chunk_systems, chunk_texts))
-            else:
-                outcomes = [
-                    judge.judge(system_prompt=system_prompt, response_text=self._extract_generation_text(g))
-                    for g in generations
-                ]
-
             for outcome in outcomes:
-                label = str(outcome.get("label") or "unknown").strip().lower()
+                label = normalize_response_safety_label(
+                    outcome.get("response_safety_label") or outcome.get("label")
+                )
                 if label not in {"safe", "unsafe"}:
                     label = "unknown"
                 classifications.append(label)
+                response_safety_labels.append(label)
 
                 reasons = outcome.get("reasons") or []
                 if not isinstance(reasons, list):
                     reasons = [str(reasons)]
                 failure_reasons.append([str(reason) for reason in reasons])
+                assistant_policy_reasons.append([str(reason) for reason in reasons])
                 raw_outputs.append(str(outcome.get("raw") or ""))
                 judge_usages.append(outcome.get("usage"))
                 judge_costs.append(outcome.get("cost_usd"))
                 judge_malformed.append(bool(outcome.get("judge_malformed", label == "unknown")))
                 judge_parse_methods.append(str(outcome.get("judge_parse_method") or "failed"))
+                answer_mode = str(outcome.get("answer_mode") or "unknown").strip().lower()
+                answer_mode_labels.append(answer_mode)
+                assistant_policy_label = str(outcome.get("assistant_policy_label") or "unknown").strip().lower()
+                assistant_policy_labels.append(assistant_policy_label)
 
                 if label == "safe":
                     safe_count += 1
@@ -629,7 +722,11 @@ class Evaluator:
             row["unknown_count"] = unknown_count
             row["judge_classifications"] = classifications
             row["judge_labels"] = classifications
+            row["response_safety_labels"] = response_safety_labels
+            row["assistant_policy_labels"] = assistant_policy_labels
+            row["answer_mode_labels"] = answer_mode_labels
             row["judge_failure_reasons"] = failure_reasons
+            row["assistant_policy_reasons"] = assistant_policy_reasons
             row["judge_raw_outputs"] = raw_outputs
             row["judge_usage"] = judge_usages
             row["judge_cost_usd"] = judge_costs
@@ -638,18 +735,6 @@ class Evaluator:
             row["all_classifications"] = classifications
             row["failure_reasons"] = failure_reasons
             row["safety_source"] = "llm_judge"
-
-            metadata = row.get("metadata", {}) or {}
-            if "dataset_source" not in row:
-                row["dataset_source"] = str(metadata.get("dataset") or "unknown")
-            is_harmful, label_source = self._resolve_is_harmful(
-                metadata,
-                dataset_source=row.get("dataset_source"),
-                prompt_pack_name=row.get("prompt_pack_name"),
-                prompt_pack_subset=row.get("prompt_pack_subset"),
-            )
-            row["is_harmful"] = is_harmful
-            row["label_source"] = label_source
 
         if results_path:
             with results_path.open("w", encoding="utf-8") as handle:
