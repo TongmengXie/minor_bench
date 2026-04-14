@@ -19,8 +19,11 @@ def _print_run_configuration(
     mode: str,
     model_name: str | None,
     provider: str | None,
+    guardrail_id: str | None,
     guardrail_model: str | None,
     guardrail_provider: str | None,
+    guardrail_input_contract: str | None,
+    guardrail_adapter: str | None,
     safety_judge_model: str | None,
     safety_judge_provider: str | None,
     guardrail_prompt_name: str | None,
@@ -36,8 +39,11 @@ def _print_run_configuration(
         "mode": mode,
         "model_name": model_name,
         "provider": provider,
+        "guardrail_id": guardrail_id,
         "guardrail_model": guardrail_model,
         "guardrail_provider": guardrail_provider,
+        "guardrail_input_contract": guardrail_input_contract,
+        "guardrail_adapter": guardrail_adapter,
         "guardrail_prompt_name": guardrail_prompt_name,
         "safety_judge_model": safety_judge_model,
         "safety_judge_provider": safety_judge_provider,
@@ -83,11 +89,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=str, default=None, help="Optional JSON config string")
     parser.add_argument("--guardrail_model", type=str, default=None, help="Optional guardrail model name")
     parser.add_argument(
+        "--guardrail_id",
+        type=str,
+        default=None,
+        help="Named guardrail profile for fair cross-guardrail comparisons.",
+    )
+    parser.add_argument(
         "--guardrail_provider",
         type=str,
-        default="scaleway",
+        default=None,
         choices=["openai", "openai_api", "scaleway", "auto", "local_hf"],
-        help="Provider used for the guardrail model (defaults to scaleway).",
+        help="Provider used for the guardrail model.",
     )
     parser.add_argument(
         "--guardrail_prompt",
@@ -177,23 +189,35 @@ def main() -> None:
     if args.config:
         config = json.loads(args.config)
 
-    if args.guardrail_model:
-        config["guardrail_model"] = args.guardrail_model
-    if args.guardrail_provider:
-        config["guardrail_provider"] = args.guardrail_provider
-    if args.guardrail_prompt:
-        config["guardrail_prompt"] = args.guardrail_prompt
-    if args.guardrail_prompt_name:
-        config["guardrail_prompt_name"] = args.guardrail_prompt_name
+    guardrail_id = getattr(args, "guardrail_id", None)
+    guardrail_model = getattr(args, "guardrail_model", None)
+    guardrail_provider = getattr(args, "guardrail_provider", None)
+    guardrail_prompt = getattr(args, "guardrail_prompt", None)
+    guardrail_prompt_name = getattr(args, "guardrail_prompt_name", None)
 
-    if args.safety_judge_model:
-        config["safety_judge_model"] = args.safety_judge_model
-    if args.safety_judge_provider:
-        config["safety_judge_provider"] = args.safety_judge_provider
-    if args.safety_judge_prompt:
-        config["safety_judge_prompt"] = args.safety_judge_prompt
-    if args.safety_judge_prompt_name:
-        config["safety_judge_prompt_name"] = args.safety_judge_prompt_name
+    if guardrail_model:
+        config["guardrail_model"] = guardrail_model
+    if guardrail_id:
+        config["guardrail_profile_id"] = guardrail_id
+    if guardrail_provider:
+        config["guardrail_provider"] = guardrail_provider
+    if guardrail_prompt:
+        config["guardrail_prompt"] = guardrail_prompt
+    if guardrail_prompt_name:
+        config["guardrail_prompt_name"] = guardrail_prompt_name
+
+    safety_judge_model = getattr(args, "safety_judge_model", None)
+    safety_judge_provider = getattr(args, "safety_judge_provider", None)
+    safety_judge_prompt = getattr(args, "safety_judge_prompt", None)
+    safety_judge_prompt_name = getattr(args, "safety_judge_prompt_name", None)
+    if safety_judge_model:
+        config["safety_judge_model"] = safety_judge_model
+    if safety_judge_provider:
+        config["safety_judge_provider"] = safety_judge_provider
+    if safety_judge_prompt:
+        config["safety_judge_prompt"] = safety_judge_prompt
+    if safety_judge_prompt_name:
+        config["safety_judge_prompt_name"] = safety_judge_prompt_name
     config.setdefault("policy_version", DEFAULT_POLICY_VERSION)
     config.setdefault("metric_definition_version", METRIC_DEFINITION_VERSION)
     if args.safety_judge_model and not config.get("safety_judge_prompt") and not config.get("safety_judge_prompt_name"):
@@ -215,8 +239,11 @@ def main() -> None:
         mode="judge_only" if args.judge_only else "evaluate",
         model_name=args.model_name,
         provider=args.provider,
+        guardrail_id=config.get("guardrail_profile_id"),
         guardrail_model=config.get("guardrail_model"),
         guardrail_provider=config.get("guardrail_provider"),
+        guardrail_input_contract=config.get("guardrail_input_contract"),
+        guardrail_adapter=config.get("guardrail_adapter"),
         guardrail_prompt_name=config.get("guardrail_prompt_name"),
         safety_judge_model=config.get("safety_judge_model"),
         safety_judge_provider=config.get("safety_judge_provider"),
@@ -269,6 +296,7 @@ def main() -> None:
         judge_meta = {
             "policy_version": config.get("policy_version"),
             "metric_definition_version": config.get("metric_definition_version"),
+            "guardrail_profile_id": config.get("guardrail_profile_id"),
             "safety_judge_model": judge_model,
             "safety_judge_provider": config.get("safety_judge_provider", "auto"),
             "safety_judge_prompt": config.get("safety_judge_prompt"),
@@ -291,8 +319,11 @@ def main() -> None:
         {
             "policy_version": config.get("policy_version"),
             "metric_definition_version": config.get("metric_definition_version"),
+            "guardrail_profile_id": config.get("guardrail_profile_id"),
             "guardrail_prompt": config.get("guardrail_prompt"),
             "guardrail_prompt_name": getattr(model_runner, "guardrail_prompt_name", None),
+            "guardrail_input_contract": getattr(model_runner, "guardrail_input_contract", None),
+            "guardrail_adapter": getattr(model_runner, "guardrail_adapter", None),
             "safety_judge_model": judge_model,
             "safety_judge_provider": config.get("safety_judge_provider", "auto"),
             "safety_judge_prompt": config.get("safety_judge_prompt"),
@@ -302,8 +333,11 @@ def main() -> None:
         else {
             "policy_version": config.get("policy_version"),
             "metric_definition_version": config.get("metric_definition_version"),
+            "guardrail_profile_id": config.get("guardrail_profile_id"),
             "guardrail_prompt": config.get("guardrail_prompt"),
             "guardrail_prompt_name": getattr(model_runner, "guardrail_prompt_name", None),
+            "guardrail_input_contract": getattr(model_runner, "guardrail_input_contract", None),
+            "guardrail_adapter": getattr(model_runner, "guardrail_adapter", None),
         }
     )
     results, output_dir = evaluator.evaluate_pack(

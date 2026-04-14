@@ -12,6 +12,7 @@ import yaml
 
 from aggregate_matrix import aggregate_from_manifest
 from assistant_policy import METRIC_DEFINITION_VERSION
+from guardrails import merge_guardrail_profile
 
 DEFAULT_LOCAL_JUDGE_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
 
@@ -43,6 +44,9 @@ def _merge_row(global_cfg: Dict[str, Any], row_cfg: Dict[str, Any]) -> Dict[str,
             merged["config"] = combined
         else:
             merged[key] = value
+    guardrail_id = merged.get("guardrail_id") or merged.get("guardrail_profile_id")
+    if guardrail_id:
+        merged = merge_guardrail_profile(merged, str(guardrail_id))
     return merged
 
 
@@ -119,6 +123,9 @@ def _build_run_eval_command(
         cmd.extend(["--exclude_variants", exclude_variants])
 
     guardrail_model = row_cfg.get("guardrail_model")
+    guardrail_id = row_cfg.get("guardrail_profile_id") or row_cfg.get("guardrail_id")
+    if guardrail_id:
+        cmd.extend(["--guardrail_id", str(guardrail_id)])
     if guardrail_model:
         cmd.extend(["--guardrail_model", str(guardrail_model)])
         cmd.extend(["--guardrail_provider", str(row_cfg.get("guardrail_provider") or "local_hf")])
@@ -126,13 +133,27 @@ def _build_run_eval_command(
     guardrail_prompt = row_cfg.get("guardrail_prompt")
     if guardrail_prompt:
         cmd.extend(["--guardrail_prompt", str(guardrail_prompt)])
+    guardrail_prompt_name = row_cfg.get("guardrail_prompt_name")
+    if guardrail_prompt_name:
+        cmd.extend(["--guardrail_prompt_name", str(guardrail_prompt_name)])
 
     judge_prompt = row_cfg.get("safety_judge_prompt")
     if judge_prompt:
         cmd.extend(["--safety_judge_prompt", str(judge_prompt)])
+    judge_prompt_name = row_cfg.get("safety_judge_prompt_name")
+    if judge_prompt_name:
+        cmd.extend(["--safety_judge_prompt_name", str(judge_prompt_name)])
 
-    config_payload = row_cfg.get("config")
-    if isinstance(config_payload, dict) and config_payload:
+    config_payload = dict(row_cfg.get("config") or {})
+    for key in [
+        "guardrail_input_contract",
+        "guardrail_adapter",
+        "guardrail_access_mode",
+        "guardrail_profile_id",
+    ]:
+        if row_cfg.get(key) is not None:
+            config_payload.setdefault(key, row_cfg.get(key))
+    if config_payload:
         cmd.extend(["--config", json.dumps(config_payload)])
 
     return cmd
@@ -249,6 +270,12 @@ def main() -> None:
             "run_dir": run_dir,
             "stdout_path": str(stdout_path),
             "stderr_path": str(stderr_path),
+            "guardrail_profile_id": row_cfg.get("guardrail_profile_id"),
+            "guardrail_model": row_cfg.get("guardrail_model"),
+            "guardrail_provider": row_cfg.get("guardrail_provider"),
+            "guardrail_input_contract": row_cfg.get("guardrail_input_contract"),
+            "guardrail_adapter": row_cfg.get("guardrail_adapter"),
+            "guardrail_access_mode": row_cfg.get("guardrail_access_mode"),
         }
 
         if proc.returncode != 0:

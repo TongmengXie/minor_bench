@@ -74,6 +74,33 @@ def test_guardrail_request_formatting(runner, guardrail_client, monkeypatch):
     assert "User prompt:\nuser prompt" in user_content
 
 
+def test_shared_policy_guardrail_request_excludes_assistant_prompt(monkeypatch):
+    runner = ModelRunner(
+        model_name="gpt-4o-mini",
+        provider="openai",
+        config={
+            "guardrail_model": "fake-guardrail",
+            "guardrail_provider": "openai",
+            "guardrail_prompt_name": "guardrail_policy_summary_v2",
+            "guardrail_input_contract": "shared_policy_native_adapter",
+            "guardrail_adapter": "allow_block_text",
+        },
+    )
+    completions = FakeChatCompletions("ALLOW")
+    client = FakeClient(completions)
+    monkeypatch.setattr(runner, "_get_guardrail_client", lambda: client)
+
+    runner._maybe_apply_guardrail("system prompt", "user prompt")
+
+    request = completions.last_request
+    assert request is not None
+    assert request["messages"][0]["content"] != runner.guardrail_prompt
+    user_content = request["messages"][1]["content"]
+    assert "system prompt" not in user_content
+    assert "User prompt:\nuser prompt" in user_content
+    assert "Policy summary:" in user_content
+
+
 def test_parse_guardrail_decision():
     status, reason, mode = ModelRunner._parse_guardrail_decision("ALLOW")
     assert status == "allow"

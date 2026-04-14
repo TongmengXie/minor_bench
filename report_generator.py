@@ -286,6 +286,7 @@ class ReportGenerator:
         lines: List[str] = ["# Evaluation Summary", ""]
 
         model_name = summary.get("model_name")
+        guardrail_profile_id = summary.get("guardrail_profile_id")
         guardrail_model = summary.get("guardrail_model")
         guardrail_provider = summary.get("guardrail_provider")
         policy_version = summary.get("policy_version")
@@ -304,6 +305,8 @@ class ReportGenerator:
             )
         else:
             lines.append("Guardrail: none")
+        if guardrail_profile_id:
+            lines.append(f"Guardrail profile: {guardrail_profile_id}")
         if policy_version:
             lines.append(f"Policy version: {policy_version}")
         if metric_definition_version:
@@ -504,17 +507,24 @@ class ReportGenerator:
             lines.append("")
             lines.append("## Guardrail decision rates")
             lines.append(
-                "| Guardrail model | Provider | Allow rate | Block rate | Malformed rate | Total |"
+                "| Profile | Guardrail model | Provider | Input contract | Adapter | Access | Allow rate | Block rate | Malformed rate | Avg latency (s) | Total |"
             )
-            lines.append("| --- | --- | --- | --- | --- | --- |")
+            lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
             for metrics in guardrail_metrics:
+                avg_guardrail_latency = metrics.get("avg_guardrail_latency_seconds")
+                latency_text = f"{avg_guardrail_latency:.3f}" if avg_guardrail_latency is not None else "n/a"
                 lines.append(
                     "| "
+                    f"{metrics.get('guardrail_profile_id', 'unknown')} | "
                     f"{metrics.get('guardrail_model', 'unknown')} | "
                     f"{metrics.get('guardrail_provider', 'unknown')} | "
+                    f"{metrics.get('guardrail_input_contract', 'unknown')} | "
+                    f"{metrics.get('guardrail_adapter', 'unknown')} | "
+                    f"{metrics.get('guardrail_access_mode', 'unknown')} | "
                     f"{metrics.get('allow_rate', 0.0):.2%} | "
                     f"{metrics.get('block_rate', 0.0):.2%} | "
                     f"{metrics.get('malformed_rate', 0.0):.2%} | "
+                    f"{latency_text} | "
                     f"{metrics.get('total_decisions', 0)} |"
                 )
 
@@ -567,7 +577,9 @@ class ReportGenerator:
         system_counts = self._empty_counts()
         tutor_counts = self._empty_counts()
         per_variant_counts: Dict[str, Dict[str, int]] = {}
-        guardrail_counts: Dict[Tuple[str, str], Counter[str]] = {}
+        guardrail_counts: Dict[Tuple[str, str, str, str, str, str], Counter[str]] = {}
+        guardrail_latency_sums: Dict[Tuple[str, str, str, str, str, str], float] = {}
+        guardrail_latency_counts: Counter[Tuple[str, str, str, str, str, str]] = Counter()
         cost_totals = {
             "tutor_cost_usd": 0.0,
             "guardrail_cost_usd": 0.0,
@@ -584,6 +596,7 @@ class ReportGenerator:
         model_names: List[str] = []
         guardrail_models: List[str] = []
         guardrail_providers: List[str] = []
+        guardrail_profile_ids: List[str] = []
 
         labeled_generation_count = 0
         judge_valid_generation_count = 0
@@ -605,10 +618,16 @@ class ReportGenerator:
                 model_names.append(str(model_name))
             row_guardrail_model = row.get("guardrail_model")
             row_guardrail_provider = row.get("guardrail_provider")
+            row_guardrail_profile_id = row.get("guardrail_profile_id")
+            row_guardrail_input_contract = row.get("guardrail_input_contract")
+            row_guardrail_adapter = row.get("guardrail_adapter")
+            row_guardrail_access_mode = row.get("guardrail_access_mode")
             if row_guardrail_model:
                 guardrail_models.append(str(row_guardrail_model))
                 if row_guardrail_provider:
                     guardrail_providers.append(str(row_guardrail_provider))
+                if row_guardrail_profile_id:
+                    guardrail_profile_ids.append(str(row_guardrail_profile_id))
 
             decisions = row.get("guardrail_decisions") or []
             for decision in decisions:
@@ -616,10 +635,26 @@ class ReportGenerator:
                     status = decision.get("status") or decision.get("guardrail_decision_status")
                     decision_model = decision.get("guardrail_model") or row_guardrail_model
                     decision_provider = decision.get("guardrail_provider") or row_guardrail_provider
+                    decision_profile_id = (
+                        decision.get("guardrail_profile_id") or row_guardrail_profile_id or "direct_guardrail"
+                    )
+                    decision_input_contract = (
+                        decision.get("guardrail_input_contract")
+                        or row_guardrail_input_contract
+                        or "unknown"
+                    )
+                    decision_adapter = decision.get("guardrail_adapter") or row_guardrail_adapter or "unknown"
+                    decision_access_mode = (
+                        decision.get("guardrail_access_mode") or row_guardrail_access_mode or "unknown"
+                    )
                 else:
                     status = decision
                     decision_model = row_guardrail_model
                     decision_provider = row_guardrail_provider
+                    decision_profile_id = row_guardrail_profile_id or "direct_guardrail"
+                    decision_input_contract = row_guardrail_input_contract or "unknown"
+                    decision_adapter = row_guardrail_adapter or "unknown"
+                    decision_access_mode = row_guardrail_access_mode or "unknown"
 
                 status_norm = str(status or "").strip().lower()
                 if status_norm not in {"allow", "block", "malformed"}:
@@ -627,7 +662,14 @@ class ReportGenerator:
                 if not decision_model:
                     continue
 
-                key = (str(decision_model), str(decision_provider or "unknown"))
+                key = (
+                    str(decision_profile_id),
+                    str(decision_model),
+                    str(decision_provider or "unknown"),
+                    str(decision_input_contract),
+                    str(decision_adapter),
+                    str(decision_access_mode),
+                )
                 counter = guardrail_counts.setdefault(key, Counter())
                 counter.update([status_norm])
 
@@ -645,12 +687,31 @@ class ReportGenerator:
 
                     guardrail_usage = raw.get("guardrail_usage")
                     guardrail_cost = raw.get("guardrail_cost_usd")
+                    guardrail_latency = raw.get("guardrail_latency")
                     if guardrail_cost is not None:
                         cost_totals["guardrail_cost_usd"] += float(guardrail_cost)
                         cost_seen["guardrail"] = True
                     if isinstance(guardrail_usage, dict):
                         cost_totals["guardrail_tokens"] += int(guardrail_usage.get("total_tokens") or 0)
                         cost_seen["guardrail"] = True
+                    guardrail_model_for_latency = raw.get("guardrail_model") or row_guardrail_model
+                    if guardrail_model_for_latency and guardrail_latency is not None:
+                        key = (
+                            str(raw.get("guardrail_profile_id") or row_guardrail_profile_id or "direct_guardrail"),
+                            str(guardrail_model_for_latency),
+                            str(raw.get("guardrail_provider") or row_guardrail_provider or "unknown"),
+                            str(
+                                raw.get("guardrail_input_contract")
+                                or row_guardrail_input_contract
+                                or "unknown"
+                            ),
+                            str(raw.get("guardrail_adapter") or row_guardrail_adapter or "unknown"),
+                            str(raw.get("guardrail_access_mode") or row_guardrail_access_mode or "unknown"),
+                        )
+                        guardrail_latency_sums[key] = guardrail_latency_sums.get(key, 0.0) + float(
+                            guardrail_latency
+                        )
+                        guardrail_latency_counts.update([key])
 
             judge_costs = row.get("judge_cost_usd") or []
             judge_usages = row.get("judge_usage") or []
@@ -759,21 +820,42 @@ class ReportGenerator:
             }
 
         guardrail_metrics: List[Dict[str, Any]] = []
-        for (guardrail_model, guardrail_provider), counts in guardrail_counts.items():
+        for key, counts in guardrail_counts.items():
+            (
+                guardrail_profile_id,
+                guardrail_model,
+                guardrail_provider,
+                guardrail_input_contract,
+                guardrail_adapter,
+                guardrail_access_mode,
+            ) = key
             total = sum(counts.values())
+            latency_count = guardrail_latency_counts.get(key, 0)
+            avg_latency = None
+            if latency_count:
+                avg_latency = guardrail_latency_sums.get(key, 0.0) / latency_count
             guardrail_metrics.append(
                 {
+                    "guardrail_profile_id": guardrail_profile_id,
                     "guardrail_model": guardrail_model,
                     "guardrail_provider": guardrail_provider,
+                    "guardrail_input_contract": guardrail_input_contract,
+                    "guardrail_adapter": guardrail_adapter,
+                    "guardrail_access_mode": guardrail_access_mode,
                     "allow_rate": (counts.get("allow", 0) / total) if total else 0.0,
                     "block_rate": (counts.get("block", 0) / total) if total else 0.0,
                     "malformed_rate": (counts.get("malformed", 0) / total) if total else 0.0,
+                    "avg_guardrail_latency_seconds": avg_latency,
                     "total_decisions": total,
                 }
             )
 
         guardrail_metrics.sort(
-            key=lambda row: (row.get("guardrail_model", ""), row.get("guardrail_provider", ""))
+            key=lambda row: (
+                row.get("guardrail_profile_id", ""),
+                row.get("guardrail_model", ""),
+                row.get("guardrail_provider", ""),
+            )
         )
 
         coverage = {
@@ -827,6 +909,7 @@ class ReportGenerator:
             "model_name": self._format_value_list(sorted(set(model_names))),
             "guardrail_model": self._format_value_list(sorted(set(guardrail_models))),
             "guardrail_provider": self._format_value_list(sorted(set(guardrail_providers))),
+            "guardrail_profile_id": self._format_value_list(sorted(set(guardrail_profile_ids))),
             "safety_source": "llm_judge" if self.use_judge_results else "rules",
             "aggregation_unit": "prompt_variant_row",
             "metric_definition_version": meta.get("metric_definition_version") or METRIC_DEFINITION_VERSION,

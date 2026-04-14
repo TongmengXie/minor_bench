@@ -280,6 +280,12 @@ class Evaluator:
         guardrail_decisions: List[Dict[str, Any]] = []
         guardrail_model = getattr(model_runner, "guardrail_model", None)
         guardrail_provider = getattr(model_runner, "guardrail_provider", None) if guardrail_model else None
+        guardrail_profile_id = getattr(model_runner, "guardrail_profile_id", None) if guardrail_model else None
+        guardrail_input_contract = (
+            getattr(model_runner, "guardrail_input_contract", None) if guardrail_model else None
+        )
+        guardrail_adapter = getattr(model_runner, "guardrail_adapter", None) if guardrail_model else None
+        guardrail_access_mode = getattr(model_runner, "guardrail_access_mode", None) if guardrail_model else None
         model_name = getattr(model_runner, "model_name", None)
         for i in range(k):
             raw = self._call_model_runner(model_runner, system_prompt, prompt_text)
@@ -302,6 +308,14 @@ class Evaluator:
                         "status": decision_status,
                         "guardrail_model": raw.get("guardrail_model", guardrail_model),
                         "guardrail_provider": raw.get("guardrail_provider", guardrail_provider),
+                        "guardrail_profile_id": raw.get("guardrail_profile_id", guardrail_profile_id),
+                        "guardrail_input_contract": raw.get(
+                            "guardrail_input_contract", guardrail_input_contract
+                        ),
+                        "guardrail_adapter": raw.get("guardrail_adapter", guardrail_adapter),
+                        "guardrail_access_mode": raw.get(
+                            "guardrail_access_mode", guardrail_access_mode
+                        ),
                     }
                 )
             else:
@@ -312,6 +326,10 @@ class Evaluator:
                         "status": None,
                         "guardrail_model": guardrail_model,
                         "guardrail_provider": guardrail_provider,
+                        "guardrail_profile_id": guardrail_profile_id,
+                        "guardrail_input_contract": guardrail_input_contract,
+                        "guardrail_adapter": guardrail_adapter,
+                        "guardrail_access_mode": guardrail_access_mode,
                     }
                 )
 
@@ -323,6 +341,10 @@ class Evaluator:
             "system_prompt": system_prompt,
             "guardrail_model": guardrail_model,
             "guardrail_provider": guardrail_provider,
+            "guardrail_profile_id": guardrail_profile_id,
+            "guardrail_input_contract": guardrail_input_contract,
+            "guardrail_adapter": guardrail_adapter,
+            "guardrail_access_mode": guardrail_access_mode,
             "guardrail_decisions": guardrail_decisions,
             "dataset_source": dataset_source,
             "prompt_pack_name": prompt_item.get("_prompt_pack_name"),
@@ -423,6 +445,18 @@ class Evaluator:
                 guardrail_provider = (
                     getattr(model_runner, "guardrail_provider", None) if guardrail_model else None
                 )
+                guardrail_profile_id = (
+                    getattr(model_runner, "guardrail_profile_id", None) if guardrail_model else None
+                )
+                guardrail_input_contract = (
+                    getattr(model_runner, "guardrail_input_contract", None) if guardrail_model else None
+                )
+                guardrail_adapter = (
+                    getattr(model_runner, "guardrail_adapter", None) if guardrail_model else None
+                )
+                guardrail_access_mode = (
+                    getattr(model_runner, "guardrail_access_mode", None) if guardrail_model else None
+                )
                 model_name = getattr(model_runner, "model_name", None)
 
                 for prompt_item in batch_items:
@@ -449,6 +483,10 @@ class Evaluator:
                             "system_prompt": system_prompt,
                             "guardrail_model": guardrail_model,
                             "guardrail_provider": guardrail_provider,
+                            "guardrail_profile_id": guardrail_profile_id,
+                            "guardrail_input_contract": guardrail_input_contract,
+                            "guardrail_adapter": guardrail_adapter,
+                            "guardrail_access_mode": guardrail_access_mode,
                             "guardrail_decisions": [],
                             "dataset_source": dataset_source,
                             "prompt_pack_name": prompt_item.get("_prompt_pack_name"),
@@ -478,6 +516,24 @@ class Evaluator:
                                 )
                                 if isinstance(output, dict)
                                 else guardrail_provider,
+                                "guardrail_profile_id": output.get(
+                                    "guardrail_profile_id", guardrail_profile_id
+                                )
+                                if isinstance(output, dict)
+                                else guardrail_profile_id,
+                                "guardrail_input_contract": output.get(
+                                    "guardrail_input_contract", guardrail_input_contract
+                                )
+                                if isinstance(output, dict)
+                                else guardrail_input_contract,
+                                "guardrail_adapter": output.get("guardrail_adapter", guardrail_adapter)
+                                if isinstance(output, dict)
+                                else guardrail_adapter,
+                                "guardrail_access_mode": output.get(
+                                    "guardrail_access_mode", guardrail_access_mode
+                                )
+                                if isinstance(output, dict)
+                                else guardrail_access_mode,
                             }
                         )
 
@@ -657,14 +713,17 @@ class Evaluator:
                     user_prompt = row.get("prompt_text") or ""
                     prompt_label = normalize_prompt_label(row.get("is_harmful"))
                     for generation in generations:
-                        outcomes_by_row[row_index].append(
-                            judge.judge(
+                        response_text = self._extract_generation_text(generation)
+                        try:
+                            outcome = judge.judge(
                                 user_prompt=user_prompt,
-                                response_text=self._extract_generation_text(generation),
+                                response_text=response_text,
                                 prompt_label=prompt_label,
                                 final_response_source=self._final_response_source_for_generation(generation),
                             )
-                        )
+                        except TypeError:
+                            outcome = judge.judge(row.get("system_prompt") or user_prompt, response_text)
+                        outcomes_by_row[row_index].append(outcome)
 
         for row_index, row in enumerate(results):
             generations = row.get("generations", []) or []

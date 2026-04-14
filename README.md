@@ -34,6 +34,12 @@ Main blocks:
 - Assistant-policy judge: scores whether that final response handled the prompt correctly.
 - Judge-quality sidecar: uses the existing human-audited subset to calibrate response-safety overblocking, not full assistant-policy correctness.
 
+Guardrail comparison contracts:
+- `legacy_exchange_binary`: legacy setup where the external guardrail sees the full assistant prompt plus user prompt.
+- `shared_policy_native_adapter`: fair comparison setup where the external guardrail sees a shared child-safety policy summary plus the user prompt, then its native output is normalized to `allow|block|malformed`.
+
+Current guardrail profiles and intended comparison rows are documented in [guardrail_inventory.md](/root/minor_bench/docs/guardrail_inventory.md).
+
 ## Policies And Prompts
 
 Current evaluation policy:
@@ -166,6 +172,15 @@ python run_matrix_eval.py \
   --name hateful_guardrail_matrix_assistant_policy_v2_20260413
 ```
 
+Run the fair external-guardrail comparison matrix:
+
+```bash
+source .minor/bin/activate
+python run_matrix_eval.py \
+  --matrix_config matrix_configs/hateful_guardrail_compare_matrix_assistant_policy_v2.yaml \
+  --name hateful_guardrail_compare_matrix_assistant_policy_v2_$(date -u +%Y%m%d_%H%M%S)
+```
+
 Exact commands used for the current non-legacy artifacts:
 
 ```bash
@@ -209,6 +224,7 @@ Current checked-in non-legacy artifacts:
 ## Core Python Files
 
 - `run_eval.py`: CLI entrypoint. Resolves config, runs the evaluation, and supports judge-only re-judging.
+- `guardrails.py`: named external-guardrail profiles plus adapter-specific request builders and output parsers.
 - `model_runner.py`: runs the optional guardrail and main model, then returns the final assistant-visible response payload.
 - `evaluator.py`: loads prompt/data sources, writes `data_manifest.json`, resolves harmful-vs-safe labels, and stores structured judge outputs in `results.jsonl`.
 - `safety_judge.py`: structured assistant-policy judge with JSON repair and retry. Returns `assistant_policy_label`, `response_safety_label`, and `answer_mode`.

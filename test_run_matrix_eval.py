@@ -44,6 +44,38 @@ def test_build_run_eval_command_forces_local_hf_judge() -> None:
     assert cmd[extra_idx + 1] == "datasets/a.jsonl,datasets/b.jsonl"
 
 
+def test_build_run_eval_command_supports_guardrail_profile() -> None:
+    row_cfg = {
+        "model_name": "llama-3.1-8b-instruct",
+        "provider": "scaleway",
+        "system_prompt_name": "assistant_child_safety_v2",
+        "prompt_pack_path": "prompt_packs/minorbench_hateful.json",
+        "safety_judge_model": "meta-llama/Llama-3.2-1B-Instruct",
+        "guardrail_profile_id": "granite_guardian_3_3_compare_v2",
+        "guardrail_model": "ibm-granite/granite-guardian-3.3-8b",
+        "guardrail_provider": "local_hf",
+        "guardrail_prompt_name": "guardrail_policy_summary_v2",
+        "guardrail_input_contract": "shared_policy_native_adapter",
+        "guardrail_adapter": "allow_block_text",
+    }
+
+    cmd = run_matrix_eval._build_run_eval_command(
+        python_exe="python",
+        run_eval_path=Path("run_eval.py"),
+        row_cfg=row_cfg,
+    )
+
+    assert "--guardrail_id" in cmd
+    guardrail_id_idx = cmd.index("--guardrail_id")
+    assert cmd[guardrail_id_idx + 1] == "granite_guardian_3_3_compare_v2"
+    prompt_name_idx = cmd.index("--guardrail_prompt_name")
+    assert cmd[prompt_name_idx + 1] == "guardrail_policy_summary_v2"
+    config_idx = cmd.index("--config")
+    payload = json.loads(cmd[config_idx + 1])
+    assert payload["guardrail_input_contract"] == "shared_policy_native_adapter"
+    assert payload["guardrail_adapter"] == "allow_block_text"
+
+
 def test_extract_run_dir() -> None:
     stdout = "foo\nEvaluation completed. Output: runs/evals/a/b/c\nbar"
     assert run_matrix_eval._extract_run_dir(stdout, "") == "runs/evals/a/b/c"

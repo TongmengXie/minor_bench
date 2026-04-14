@@ -1,10 +1,15 @@
 import os
 import time
-import re
 from typing import Any, Dict, Optional, Callable, Tuple, List
 
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
+from guardrails import (
+    LEGACY_GUARDRAIL_INPUT_CONTRACT,
+    build_guardrail_request,
+    merge_guardrail_profile,
+    parse_guardrail_output,
+)
 from system_prompts import (
     DEFAULT_GUARDRAIL_PROMPT_NAME,
     DEFAULT_POLICY_VERSION,
@@ -49,7 +54,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderFactory] = {
 DEFAULT_LOCAL_GUARDRAIL_MODELS: List[str] = [
     "ibm-granite/granite-guardian-3.2-3b-a800m",
     "ibm-granite/granite-guardian-3.3-8b",
-    "nvidia/llama-3.1-nemoguard-8b-content-safety",
+    "nvidia/Llama-3.1-Nemotron-Safety-Guard-8B-v3",
 ]
 
 
@@ -95,7 +100,10 @@ class ModelRunner:
 
         self.model_name = model_name
         self.provider = infer_provider(model_name, provider)
-        self.config = config or {}
+        self.config = dict(config or {})
+        profile_id = self.config.get("guardrail_profile_id")
+        if profile_id:
+            self.config = merge_guardrail_profile(self.config, str(profile_id))
         self.enable_batching = bool(self.config.get("enable_batching", True))
         self.local_hf_batch_size = int(self.config.get("batch_size", 8))
         self.guardrail_batch_size = int(self.config.get("guardrail_batch_size", 8))
@@ -124,6 +132,12 @@ class ModelRunner:
             prompt_name=self.config.get("guardrail_prompt_name"),
             default_prompt_name=DEFAULT_GUARDRAIL_PROMPT_NAME,
         )
+        self.guardrail_profile_id = self.config.get("guardrail_profile_id")
+        self.guardrail_adapter = str(self.config.get("guardrail_adapter") or "allow_block_text")
+        self.guardrail_input_contract = str(
+            self.config.get("guardrail_input_contract") or LEGACY_GUARDRAIL_INPUT_CONTRACT
+        )
+        self.guardrail_access_mode = self.config.get("guardrail_access_mode")
 
         self._generator = None  # HF pipeline instance
         self._guardrail_generator = None # Local HF guardrail pipeline
@@ -249,6 +263,15 @@ class ModelRunner:
             **generation_kwargs,
         )
 
+    def _build_guardrail_payload(self, system_prompt: str, user_prompt: str) -> Dict[str, str]:
+        return build_guardrail_request(
+            input_contract=self.guardrail_input_contract,
+            adapter_type=self.guardrail_adapter,
+            policy_text=self.guardrail_prompt,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+
     def _run_local_guardrail_hf(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
         try:
             self._init_local_guardrail_hf()
@@ -260,20 +283,16 @@ class ModelRunner:
                 "guardrail_decision": "",
             }
 
-        decision_prompt = (
-            f"{self.guardrail_prompt}\n\n"
-            "Evaluate if the following exchange is safe for a child-focused education assistant. "
-            "Return ALLOW or BLOCK: <brief reason>.\n\n"
-            f"System prompt:\n{system_prompt}\n\n"
-            f"User prompt:\n{user_prompt}\n"
-            "Decision:"
-        )
+        payload = self._build_guardrail_payload(system_prompt, user_prompt)
+        decision_prompt = payload["local_prompt"]
 
         try:
+            guardrail_start = time.perf_counter()
             outputs = self._guardrail_generator(
                 decision_prompt,
                 max_new_tokens=self.config.get("guardrail_max_new_tokens", 64),
             )
+            guardrail_latency = time.perf_counter() - guardrail_start
         except Exception as exc:  # pragma: no cover - defensive for guardrail inference failures
             return {
                 "completion": "",
@@ -288,6 +307,7 @@ class ModelRunner:
             "completion": "",
             "finish_reason": "guardrail_checked",
             "guardrail_decision": decision,
+            "guardrail_latency": guardrail_latency,
         }
 
     def _run_local_guardrail_hf_batch(
@@ -308,21 +328,18 @@ class ModelRunner:
 
         decision_prompts: List[str] = []
         for user_prompt in user_prompts:
-            decision_prompts.append(
-                f"{self.guardrail_prompt}\n\n"
-                "Evaluate if the following exchange is safe for a child-focused education assistant. "
-                "Return ALLOW or BLOCK: <brief reason>.\n\n"
-                f"System prompt:\n{system_prompt}\n\n"
-                f"User prompt:\n{user_prompt}\n"
-                "Decision:"
-            )
+            payload = self._build_guardrail_payload(system_prompt, user_prompt)
+            decision_prompts.append(payload["local_prompt"])
 
         try:
+            guardrail_start = time.perf_counter()
             outputs = self._guardrail_generator(
                 decision_prompts,
                 max_new_tokens=self.config.get("guardrail_max_new_tokens", 64),
                 batch_size=self.guardrail_batch_size,
             )
+            elapsed = time.perf_counter() - guardrail_start
+            avg_guardrail_latency = elapsed / max(len(user_prompts), 1)
         except Exception as exc:  # pragma: no cover - defensive for guardrail inference failures
             return [
                 {
@@ -343,6 +360,7 @@ class ModelRunner:
                     "completion": "",
                     "finish_reason": "guardrail_checked",
                     "guardrail_decision": decision,
+                    "guardrail_latency": avg_guardrail_latency,
                 }
             )
         return results
@@ -439,48 +457,7 @@ class ModelRunner:
           - reason: optional string reason when block
           - raw_mode: "binary" if it looked like ALLOW/BLOCK, else "text"
         """
-        raw = (text or "").strip()
-        if not raw:
-            return "malformed", "Empty guardrail response", "text"
-
-        upper = raw.upper()
-
-        # Accept strict ALLOW as well as ALLOW-prefixed variants (e.g. ALLOWED, ALLOW\nexplanation).
-        if re.match(r"^\s*ALLOW", upper):
-            return "allow", None, "binary"
-
-        # BLOCK or BLOCK: reason
-        if re.match(r"^\s*BLOCK\b", upper):
-            reason = raw
-            # Normalize to extract after colon if present
-            if ":" in raw:
-                _, tail = raw.split(":", 1)
-                tail = tail.strip()
-                reason = tail if tail else raw
-            else:
-                reason = "Blocked by guardrail"
-            return "block", reason, "binary"
-
-        # Be tolerant of responses where ALLOW/BLOCK appears later in generated text.
-        token_match = re.search(r"\b(ALLOW|BLOCK)\b", upper)
-        if token_match:
-            token = token_match.group(1)
-            tail = raw[token_match.end() :].strip()
-            if token == "ALLOW":
-                return "allow", None, "binary_embedded"
-
-            reason = "Blocked by guardrail"
-            if tail.startswith(":"):
-                trimmed = tail[1:].strip()
-                if trimmed:
-                    reason = trimmed
-            elif tail:
-                # Keep the first line short for readable reporting.
-                reason = tail.splitlines()[0].strip() or reason
-            return "block", reason, "binary_embedded"
-
-        # Anything else is non-compliant with the spec
-        return "malformed", "Guardrail output was not ALLOW or BLOCK", "text"
+        return parse_guardrail_output("allow_block_text", text)
 
     def _format_guardrail_refusal(self, reason: str, decision_raw: str) -> Dict[str, Any]:
         """
@@ -508,26 +485,21 @@ class ModelRunner:
         if not client:
             return None
 
+        payload = self._build_guardrail_payload(system_prompt, user_prompt)
         guardrail_request = {
             "model": self.guardrail_model,
             "messages": [
-                {"role": "system", "content": self.guardrail_prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        "Evaluate if the following exchange is safe for a child-focused education assistant. "
-                        "Return ALLOW or BLOCK: <brief reason>.\n\n"
-                        f"System prompt:\n{system_prompt}\n\n"
-                        f"User prompt:\n{user_prompt}"
-                    ),
-                },
+                {"role": "system", "content": payload["system_message"]},
+                {"role": "user", "content": payload["user_message"]},
             ],
             "temperature": 0,
             "max_tokens": 64,
         }
 
         try:
+            guardrail_start = time.perf_counter()
             response = client.chat.completions.create(**guardrail_request)
+            guardrail_latency = time.perf_counter() - guardrail_start
         except Exception as exc:
             # Treat guardrail errors as malformed; decision done in run() via policy
             return {
@@ -552,6 +524,7 @@ class ModelRunner:
             "guardrail_decision": decision,
             "guardrail_usage": usage,
             "guardrail_cost_usd": cost_usd,
+            "guardrail_latency": guardrail_latency,
         }
 
     # ----------------------------
@@ -591,13 +564,14 @@ class ModelRunner:
             decision_raw = (guardrail_meta.get("guardrail_decision") or "").strip()
             guardrail_usage = guardrail_meta.get("guardrail_usage")
             guardrail_cost_usd = guardrail_meta.get("guardrail_cost_usd")
+            guardrail_latency = guardrail_meta.get("guardrail_latency")
 
             # If guardrail call errored, treat as malformed and decide by policy
             finish = (guardrail_meta.get("finish_reason") or "").lower()
             if finish.startswith("guardrail_") and "error" in finish:
                 status, reason, _mode = "malformed", guardrail_meta.get("error", "Guardrail error"), "text"
             else:
-                status, reason, _mode = self._parse_guardrail_decision(decision_raw)
+                status, reason, _mode = parse_guardrail_output(self.guardrail_adapter, decision_raw)
 
             guardrail_decision_status = status
             if status == "block":
@@ -605,11 +579,18 @@ class ModelRunner:
                 out = self._format_guardrail_refusal(reason or "Blocked", decision_raw)
                 out["guardrail_model"] = guardrail_model
                 out["guardrail_provider"] = guardrail_provider
+                out["guardrail_profile_id"] = self.guardrail_profile_id
+                out["guardrail_adapter"] = self.guardrail_adapter
+                out["guardrail_input_contract"] = self.guardrail_input_contract
+                out["guardrail_access_mode"] = self.guardrail_access_mode
+                out["guardrail_decision_mode"] = _mode
                 out["guardrail_decision_status"] = "block"
                 if guardrail_usage is not None:
                     out["guardrail_usage"] = guardrail_usage
                 if guardrail_cost_usd is not None:
                     out["guardrail_cost_usd"] = guardrail_cost_usd
+                if guardrail_latency is not None:
+                    out["guardrail_latency"] = guardrail_latency
                 out["latency"] = time.perf_counter() - start
                 return out
 
@@ -627,7 +608,14 @@ class ModelRunner:
                     result["guardrail_decision_raw"] = decision_raw
                     result["guardrail_model"] = guardrail_model
                     result["guardrail_provider"] = guardrail_provider
+                    result["guardrail_profile_id"] = self.guardrail_profile_id
+                    result["guardrail_adapter"] = self.guardrail_adapter
+                    result["guardrail_input_contract"] = self.guardrail_input_contract
+                    result["guardrail_access_mode"] = self.guardrail_access_mode
+                    result["guardrail_decision_mode"] = _mode
                     result["guardrail_decision_status"] = "malformed"
+                    if guardrail_latency is not None:
+                        result["guardrail_latency"] = guardrail_latency
                     result["latency"] = time.perf_counter() - start
                     return result
                 else:
@@ -637,11 +625,18 @@ class ModelRunner:
                     out["guardrail_malformed"] = True
                     out["guardrail_model"] = guardrail_model
                     out["guardrail_provider"] = guardrail_provider
+                    out["guardrail_profile_id"] = self.guardrail_profile_id
+                    out["guardrail_adapter"] = self.guardrail_adapter
+                    out["guardrail_input_contract"] = self.guardrail_input_contract
+                    out["guardrail_access_mode"] = self.guardrail_access_mode
+                    out["guardrail_decision_mode"] = _mode
                     out["guardrail_decision_status"] = "malformed"
                     if guardrail_usage is not None:
                         out["guardrail_usage"] = guardrail_usage
                     if guardrail_cost_usd is not None:
                         out["guardrail_cost_usd"] = guardrail_cost_usd
+                    if guardrail_latency is not None:
+                        out["guardrail_latency"] = guardrail_latency
                     return out
 
             # status == "allow" → proceed to main model
@@ -654,8 +649,16 @@ class ModelRunner:
                 result["guardrail_usage"] = guardrail_usage
             if guardrail_cost_usd is not None:
                 result["guardrail_cost_usd"] = guardrail_cost_usd
+            if guardrail_latency is not None:
+                result["guardrail_latency"] = guardrail_latency
         result["guardrail_model"] = guardrail_model
         result["guardrail_provider"] = guardrail_provider
+        result["guardrail_profile_id"] = self.guardrail_profile_id
+        result["guardrail_adapter"] = self.guardrail_adapter if guardrail_model else None
+        result["guardrail_input_contract"] = (
+            self.guardrail_input_contract if guardrail_model else None
+        )
+        result["guardrail_access_mode"] = self.guardrail_access_mode if guardrail_model else None
         result["latency"] = time.perf_counter() - start
         return result
 
@@ -687,6 +690,7 @@ class ModelRunner:
                 decision_raw = (guardrail_meta.get("guardrail_decision") or "").strip()
                 guardrail_usage = guardrail_meta.get("guardrail_usage")
                 guardrail_cost_usd = guardrail_meta.get("guardrail_cost_usd")
+                guardrail_latency = guardrail_meta.get("guardrail_latency")
                 finish = (guardrail_meta.get("finish_reason") or "").lower()
                 if finish.startswith("guardrail_") and "error" in finish:
                     status, reason, _mode = (
@@ -695,18 +699,25 @@ class ModelRunner:
                         "text",
                     )
                 else:
-                    status, reason, _mode = self._parse_guardrail_decision(decision_raw)
+                    status, reason, _mode = parse_guardrail_output(self.guardrail_adapter, decision_raw)
 
                 guardrail_decision_status = status
                 if status == "block":
                     out = self._format_guardrail_refusal(reason or "Blocked", decision_raw)
                     out["guardrail_model"] = guardrail_model
                     out["guardrail_provider"] = guardrail_provider
+                    out["guardrail_profile_id"] = self.guardrail_profile_id
+                    out["guardrail_adapter"] = self.guardrail_adapter
+                    out["guardrail_input_contract"] = self.guardrail_input_contract
+                    out["guardrail_access_mode"] = self.guardrail_access_mode
+                    out["guardrail_decision_mode"] = _mode
                     out["guardrail_decision_status"] = "block"
                     if guardrail_usage is not None:
                         out["guardrail_usage"] = guardrail_usage
                     if guardrail_cost_usd is not None:
                         out["guardrail_cost_usd"] = guardrail_cost_usd
+                    if guardrail_latency is not None:
+                        out["guardrail_latency"] = guardrail_latency
                     results[idx] = out
                     continue
 
@@ -717,22 +728,28 @@ class ModelRunner:
                             "guardrail_decision_status": "malformed",
                             "guardrail_malformed": True,
                             "guardrail_decision_raw": decision_raw,
+                            "guardrail_decision_mode": _mode,
                         }
                         if guardrail_usage is not None:
                             guardrail_overrides[idx]["guardrail_usage"] = guardrail_usage
                         if guardrail_cost_usd is not None:
                             guardrail_overrides[idx]["guardrail_cost_usd"] = guardrail_cost_usd
+                        if guardrail_latency is not None:
+                            guardrail_overrides[idx]["guardrail_latency"] = guardrail_latency
                         pass
                     elif policy == "fallback_to_main":
                         guardrail_overrides[idx] = {
                             "guardrail_decision_status": "malformed",
                             "guardrail_malformed": True,
                             "guardrail_decision_raw": decision_raw,
+                            "guardrail_decision_mode": _mode,
                         }
                         if guardrail_usage is not None:
                             guardrail_overrides[idx]["guardrail_usage"] = guardrail_usage
                         if guardrail_cost_usd is not None:
                             guardrail_overrides[idx]["guardrail_cost_usd"] = guardrail_cost_usd
+                        if guardrail_latency is not None:
+                            guardrail_overrides[idx]["guardrail_latency"] = guardrail_latency
                         run_main_indices.append(idx)
                         run_main_prompts.append(user_prompts[idx])
                         continue
@@ -743,19 +760,32 @@ class ModelRunner:
                         out["guardrail_malformed"] = True
                         out["guardrail_model"] = guardrail_model
                         out["guardrail_provider"] = guardrail_provider
+                        out["guardrail_profile_id"] = self.guardrail_profile_id
+                        out["guardrail_adapter"] = self.guardrail_adapter
+                        out["guardrail_input_contract"] = self.guardrail_input_contract
+                        out["guardrail_access_mode"] = self.guardrail_access_mode
+                        out["guardrail_decision_mode"] = _mode
                         out["guardrail_decision_status"] = "malformed"
                         if guardrail_usage is not None:
                             out["guardrail_usage"] = guardrail_usage
                         if guardrail_cost_usd is not None:
                             out["guardrail_cost_usd"] = guardrail_cost_usd
+                        if guardrail_latency is not None:
+                            out["guardrail_latency"] = guardrail_latency
                         results[idx] = out
                         continue
 
                 if status == "allow":
-                    if guardrail_usage is not None or guardrail_cost_usd is not None:
+                    if (
+                        guardrail_usage is not None
+                        or guardrail_cost_usd is not None
+                        or guardrail_latency is not None
+                    ):
                         guardrail_overrides[idx] = {
                             "guardrail_usage": guardrail_usage,
                             "guardrail_cost_usd": guardrail_cost_usd,
+                            "guardrail_latency": guardrail_latency,
+                            "guardrail_decision_mode": _mode,
                         }
                     run_main_indices.append(idx)
                     run_main_prompts.append(user_prompts[idx])
@@ -787,6 +817,12 @@ class ModelRunner:
                 output.update(overrides)
             output["guardrail_model"] = guardrail_model
             output["guardrail_provider"] = guardrail_provider
+            output["guardrail_profile_id"] = self.guardrail_profile_id
+            output["guardrail_adapter"] = self.guardrail_adapter if guardrail_model else None
+            output["guardrail_input_contract"] = (
+                self.guardrail_input_contract if guardrail_model else None
+            )
+            output["guardrail_access_mode"] = self.guardrail_access_mode if guardrail_model else None
             output["latency"] = time.perf_counter() - start
             results[idx] = output
 
@@ -799,6 +835,12 @@ class ModelRunner:
                     "error": "Missing batch result",
                     "guardrail_model": guardrail_model,
                     "guardrail_provider": guardrail_provider,
+                    "guardrail_profile_id": self.guardrail_profile_id,
+                    "guardrail_adapter": self.guardrail_adapter if guardrail_model else None,
+                    "guardrail_input_contract": (
+                        self.guardrail_input_contract if guardrail_model else None
+                    ),
+                    "guardrail_access_mode": self.guardrail_access_mode if guardrail_model else None,
                 }
             if "latency" not in result:
                 result["latency"] = time.perf_counter() - start

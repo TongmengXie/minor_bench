@@ -136,11 +136,22 @@ def _collect_records(manifest: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], st
         allow_rate = _allow_rate(summary)
         system_card = (summary.get("scorecards") or {}).get("system") or {}
         tutor_card = (summary.get("scorecards") or {}).get("tutor_conditional") or {}
+        guardrail_profile_id = summary.get("guardrail_profile_id")
+        guardrail_model = summary.get("guardrail_model")
+        guardrail_provider = summary.get("guardrail_provider")
+        guardrail_metrics = summary.get("guardrail_metrics") or []
+        first_guardrail_metrics = guardrail_metrics[0] if guardrail_metrics else {}
 
         for variant, metrics in variant_metrics.items():
             record = {
                 "row_id": run.get("row_id"),
                 "row_label": run.get("row_label") or run.get("row_id"),
+                "guardrail_profile_id": guardrail_profile_id,
+                "guardrail_model": guardrail_model,
+                "guardrail_provider": guardrail_provider,
+                "guardrail_input_contract": first_guardrail_metrics.get("guardrail_input_contract"),
+                "guardrail_adapter": first_guardrail_metrics.get("guardrail_adapter"),
+                "guardrail_access_mode": first_guardrail_metrics.get("guardrail_access_mode"),
                 "variant": variant,
                 "ber": _parse_optional_float(metrics.get("balanced_error_rate")),
                 "f1_score": _parse_optional_float(metrics.get("f1_score")),
@@ -193,6 +204,12 @@ def _write_long_csv(records: List[Dict[str, Any]], output_dir: Path) -> Path:
     headers = [
         "row_id",
         "row_label",
+        "guardrail_profile_id",
+        "guardrail_model",
+        "guardrail_provider",
+        "guardrail_input_contract",
+        "guardrail_adapter",
+        "guardrail_access_mode",
         "variant",
         "metric_definition_version",
         "ber",

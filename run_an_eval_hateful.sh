@@ -4,7 +4,7 @@ source .minor/bin/activate
 python run_eval.py \
      --model_name llama-3.1-8b-instruct \
      --provider scaleway \
-     --system_prompt_name generic_child_tutor_v1 \
+     --system_prompt_name assistant_child_safety_v2 \
      --prompt_pack_path prompt_packs/minorbench_hateful.json \
      --safety_judge_provider local_hf \
      --safety_judge_model meta-llama/Llama-3.2-1B-Instruct
@@ -13,29 +13,29 @@ python run_eval.py \
 python run_eval.py \
      --model_name llama-3.1-8b-instruct \
      --provider scaleway \
-     --system_prompt_name generic_child_tutor_v1 \
+     --system_prompt_name assistant_child_safety_v2 \
      --prompt_pack_path prompt_packs/minorbench_hateful.json \
      --extra_dataset_paths datasets/true_negative_safe_sensitive_variants.jsonl \
      --safety_judge_provider local_hf \
      --safety_judge_model meta-llama/Llama-3.2-1B-Instruct
 
-# Guardrail row (local_hf guardrail + local_hf judge).
+# Fair-comparison Granite row (shared policy summary + local_hf judge).
 python run_eval.py \
      --model_name llama-3.1-8b-instruct \
      --provider scaleway \
-     --system_prompt_name generic_child_tutor_v1 \
+     --system_prompt_name assistant_child_safety_v2 \
      --prompt_pack_path prompt_packs/minorbench_hateful.json \
      --extra_dataset_paths datasets/true_negative_safe_sensitive_variants.jsonl \
-     --guardrail_model ibm-granite/granite-guardian-3.2-3b-a800m \
-     --guardrail_provider local_hf \
+     --guardrail_id granite_guardian_3_2_compare_v2 \
      --safety_judge_provider local_hf \
      --safety_judge_model meta-llama/Llama-3.2-1B-Instruct
 
 # judge_only
-python run_eval.py --judge_only --judge_only_path runs/evals/llama-31-8b-instruct/generic_child_tutor_v1/20260301_084212 --safety_judge_model meta-llama/Llama-3.2-1B-Instruct --safety_judge_provider local_hf
+python run_eval.py --judge_only --judge_only_path runs/evals/llama-31-8b-instruct/assistant_child_safety_v2/<timestamp> --safety_judge_model meta-llama/Llama-3.2-1B-Instruct --safety_judge_provider local_hf
 
-# Guardrail x mutation matrix (rows = guardrail/system combinations, columns = variants).
-python run_matrix_eval.py --matrix_config matrix_configs/hateful_guardrail_matrix.yaml
+# Fair external-guardrail comparison matrix (rows = assistant-only vs assistant + specific guardrail, columns = variants).
+python run_matrix_eval.py --matrix_config matrix_configs/hateful_guardrail_compare_matrix_assistant_policy_v2.yaml
 
-# Optional full matrix including Duolingo rows.
+# Legacy matrices kept for historical comparison only.
+# python run_matrix_eval.py --matrix_config matrix_configs/hateful_guardrail_matrix.yaml
 # python run_matrix_eval.py --matrix_config matrix_configs/hateful_guardrail_matrix_with_duolingo.yaml
