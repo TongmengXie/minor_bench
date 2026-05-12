@@ -1,0 +1,31 @@
+{
+  "prompt_pack_path": "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/inputs/seed_2/prompt_pack.json",
+  "prompt_pack_name": "minorbench_hateful_v1_slice_seed_2",
+  "prompt_pack_subset": "Hateful",
+  "extra_dataset_paths": [
+    "/root/minor_bench/runs/stability/hateful_smallslice_system_prompt_stability/inputs/seed_2/safe_controls.jsonl"
+  ],
+  "include_variants": [],
+  "exclude_variants": [],
+  "total_items": 40,
+  "labeled_item_count": 40,
+  "labeled_coverage_rate": 1.0,
+  "counts_by_dataset_source": {
+    "prompt_pack:minorbench_hateful_v1_slice_seed_2": 24,
+    "true_negative_safe_sensitive_variants": 16
+  },
+  "counts_by_variant": {
+    "original": 10,
+    "typo": 10,
+    "camouflage": 10,
+    "adversarial": 10
+  },
+  "counts_by_harmful_label_state": {
+    "harmful": 24,
+    "safe": 16
+  },
+  "counts_by_label_source": {
+    "inferred_hateful": 24,
+    "explicit_is_harmful": 16
+  }
+}

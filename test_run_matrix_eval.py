@@ -14,7 +14,7 @@ import run_matrix_eval
 
 def test_build_run_eval_command_forces_local_hf_judge() -> None:
     row_cfg = {
-        "model_name": "llama-3.1-8b-instruct",
+        "model_name": "mistral-small-3.2-24b-instruct-2506",
         "provider": "scaleway",
         "system_prompt_name": "generic_child_tutor_v1",
         "prompt_pack_path": "prompt_packs/minorbench_hateful.json",
@@ -46,7 +46,7 @@ def test_build_run_eval_command_forces_local_hf_judge() -> None:
 
 def test_build_run_eval_command_supports_guardrail_profile() -> None:
     row_cfg = {
-        "model_name": "llama-3.1-8b-instruct",
+        "model_name": "mistral-small-3.2-24b-instruct-2506",
         "provider": "scaleway",
         "system_prompt_name": "assistant_child_safety_v2",
         "prompt_pack_path": "prompt_packs/minorbench_hateful.json",
@@ -54,9 +54,27 @@ def test_build_run_eval_command_supports_guardrail_profile() -> None:
         "guardrail_profile_id": "granite_guardian_3_3_compare_v2",
         "guardrail_model": "ibm-granite/granite-guardian-3.3-8b",
         "guardrail_provider": "local_hf",
-        "guardrail_prompt_name": "guardrail_policy_summary_v2",
+        "guardrail_prompt_name": "guardrail_granite_native_v1",
         "guardrail_input_contract": "shared_policy_native_adapter",
-        "guardrail_adapter": "allow_block_text",
+        "guardrail_adapter": "granite_guardian_yes_no",
+        "guardrail_malformed_policy": "fallback_to_main",
+        "guardrail_prompt_normalizer": "strip_known_jailbreak_prefix",
+        "guardrail_risk_names": [
+            "harm",
+            "social_bias",
+            "profanity",
+            "jailbreak",
+            "sexual_content",
+            "violence",
+            "unethical_behavior",
+        ],
+        "guardrail_block_risk_names": [
+            "social_bias",
+            "jailbreak",
+            "sexual_content",
+            "violence",
+            "unethical_behavior",
+        ],
     }
 
     cmd = run_matrix_eval._build_run_eval_command(
@@ -69,11 +87,29 @@ def test_build_run_eval_command_supports_guardrail_profile() -> None:
     guardrail_id_idx = cmd.index("--guardrail_id")
     assert cmd[guardrail_id_idx + 1] == "granite_guardian_3_3_compare_v2"
     prompt_name_idx = cmd.index("--guardrail_prompt_name")
-    assert cmd[prompt_name_idx + 1] == "guardrail_policy_summary_v2"
+    assert cmd[prompt_name_idx + 1] == "guardrail_granite_native_v1"
     config_idx = cmd.index("--config")
     payload = json.loads(cmd[config_idx + 1])
     assert payload["guardrail_input_contract"] == "shared_policy_native_adapter"
-    assert payload["guardrail_adapter"] == "allow_block_text"
+    assert payload["guardrail_adapter"] == "granite_guardian_yes_no"
+    assert payload["guardrail_malformed_policy"] == "fallback_to_main"
+    assert payload["guardrail_prompt_normalizer"] == "strip_known_jailbreak_prefix"
+    assert payload["guardrail_risk_names"] == [
+        "harm",
+        "social_bias",
+        "profanity",
+        "jailbreak",
+        "sexual_content",
+        "violence",
+        "unethical_behavior",
+    ]
+    assert payload["guardrail_block_risk_names"] == [
+        "social_bias",
+        "jailbreak",
+        "sexual_content",
+        "violence",
+        "unethical_behavior",
+    ]
 
 
 def test_extract_run_dir() -> None:
@@ -84,7 +120,7 @@ def test_extract_run_dir() -> None:
 def test_main_writes_manifest_and_uses_local_hf_judge(tmp_path: Path, monkeypatch) -> None:
     matrix_cfg = {
         "global": {
-            "model_name": "llama-3.1-8b-instruct",
+            "model_name": "mistral-small-3.2-24b-instruct-2506",
             "provider": "scaleway",
             "prompt_pack_path": "prompt_packs/minorbench_hateful.json",
             "safety_judge_provider": "openai",
@@ -146,3 +182,106 @@ def test_main_writes_manifest_and_uses_local_hf_judge(tmp_path: Path, monkeypatc
     for cmd in recorded_cmds:
         idx = cmd.index("--safety_judge_provider")
         assert cmd[idx + 1] == "local_hf"
+
+
+def test_main_skips_invalid_probe_rows(tmp_path: Path, monkeypatch) -> None:
+    matrix_cfg = {
+        "global": {
+            "model_name": "mistral-small-3.2-24b-instruct-2506",
+            "provider": "scaleway",
+            "prompt_pack_path": "prompt_packs/minorbench_hateful.json",
+            "system_prompt_name": "assistant_child_safety_v2",
+            "safety_judge_model": "meta-llama/Llama-3.2-1B-Instruct",
+            "guardrail_probe": {
+                "enabled": True,
+                "harmful_rows_per_variant": 2,
+                "safe_rows_per_variant": 1,
+                "seed": 1,
+            },
+            "invalid_row_policy": "exclude_main",
+        },
+        "rows": [
+            {"id": "baseline", "system_prompt_name": "assistant_child_safety_v2"},
+            {
+                "id": "granite_bad",
+                "system_prompt_name": "assistant_child_safety_v2",
+                "guardrail_profile_id": "granite_guardian_3_3_compare_v2",
+            },
+        ],
+    }
+    cfg_path = tmp_path / "matrix.yaml"
+    cfg_path.write_text(yaml.safe_dump(matrix_cfg), encoding="utf-8")
+
+    recorded_cmds = []
+
+    def fake_run(cmd, cwd, text, capture_output):
+        recorded_cmds.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="Evaluation completed. Output: runs/evals/x/y/z\n", stderr="")
+
+    monkeypatch.setattr(run_matrix_eval.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        run_matrix_eval,
+        "run_probe",
+        lambda **_kwargs: {
+            "manifest_path": str(tmp_path / "probe_manifest.json"),
+            "samples_path": str(tmp_path / "probe_samples.json"),
+            "report_path": str(tmp_path / "probe_report.md"),
+            "payload": {
+                "thresholds": {},
+                "rows": [
+                    {
+                        "row_id": "granite_bad",
+                        "status": "invalid",
+                        "invalid_reasons": ["allow_rate=0%"],
+                        "allow_rate": 0.0,
+                        "block_rate": 0.0,
+                        "malformed_rate": 1.0,
+                        "runtime_error_rate": 1.0,
+                        "safe_block_rate": 0.0,
+                        "harmful_allow_rate": 0.0,
+                    }
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        run_matrix_eval,
+        "aggregate_from_manifest",
+        lambda manifest_path: {"matrix_report_md": str(Path(manifest_path).with_name("matrix_report.md"))},
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_matrix_eval.py",
+            "--matrix_config",
+            str(cfg_path),
+            "--output_root",
+            str(tmp_path / "matrix_out"),
+            "--name",
+            "test_probe_skip",
+        ],
+    )
+
+    run_matrix_eval.main()
+
+    manifest = json.loads(
+        (tmp_path / "matrix_out" / "test_probe_skip" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["runs"][0]["status"] == "success"
+    assert manifest["runs"][1]["status"] == "skipped_after_probe"
+    assert len(recorded_cmds) == 1
+
+
+def test_canonical_assistant_policy_v2_matrix_configs_use_mistral_small() -> None:
+    repo_root = Path(__file__).resolve().parent
+    expected = "mistral-small-3.2-24b-instruct-2506"
+
+    for rel_path in [
+        "matrix_configs/hateful_guardrail_matrix_assistant_policy_v2.yaml",
+        "matrix_configs/hateful_guardrail_compare_matrix_assistant_policy_v2.yaml",
+        "matrix_configs/hateful_guardrail_compare_granite_only.yaml",
+    ]:
+        cfg = run_matrix_eval._load_matrix_config(repo_root / rel_path)
+        assert cfg["global"]["model_name"] == expected

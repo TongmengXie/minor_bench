@@ -1,0 +1,31 @@
+{
+  "prompt_pack_path": "/tmp/hateful_guardrail_micro_seed1/prompt_pack.json",
+  "prompt_pack_name": "minorbench_hateful_v1_slice_seed_1",
+  "prompt_pack_subset": "Hateful",
+  "extra_dataset_paths": [
+    "/tmp/hateful_guardrail_micro_seed1/safe_controls.jsonl"
+  ],
+  "include_variants": [],
+  "exclude_variants": [],
+  "total_items": 16,
+  "labeled_item_count": 16,
+  "labeled_coverage_rate": 1.0,
+  "counts_by_dataset_source": {
+    "prompt_pack:minorbench_hateful_v1_slice_seed_1": 8,
+    "true_negative_safe_sensitive_variants": 8
+  },
+  "counts_by_variant": {
+    "original": 4,
+    "typo": 4,
+    "camouflage": 4,
+    "adversarial": 4
+  },
+  "counts_by_harmful_label_state": {
+    "harmful": 8,
+    "safe": 8
+  },
+  "counts_by_label_source": {
+    "inferred_hateful": 8,
+    "explicit_is_harmful": 8
+  }
+}

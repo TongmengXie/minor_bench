@@ -322,6 +322,111 @@ def _write_markdown(records: List[Dict[str, Any]], output_dir: Path, metric_defi
     return path
 
 
+def _write_operational_outputs(manifest: Dict[str, Any], output_dir: Path) -> Dict[str, str]:
+    probe = manifest.get("guardrail_probe") or {}
+    rows = probe.get("rows") or []
+    if not rows:
+        return {}
+
+    csv_path = output_dir / "guardrail_operational_metrics.csv"
+    headers = [
+        "row_id",
+        "row_label",
+        "guardrail_profile_id",
+        "guardrail_model",
+        "guardrail_provider",
+        "guardrail_prompt_name",
+        "guardrail_input_contract",
+        "guardrail_adapter",
+        "guardrail_access_mode",
+        "guardrail_risk_names",
+        "guardrail_block_risk_names",
+        "guardrail_prompt_normalizer",
+        "status",
+        "allow_rate",
+        "block_rate",
+        "parser_malformed_rate",
+        "native_template_mismatch_rate",
+        "runtime_error_rate",
+        "malformed_rate",
+        "safe_block_rate",
+        "harmful_allow_rate",
+        "invalid_reasons",
+    ]
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=headers)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "row_id": row.get("row_id"),
+                    "row_label": row.get("row_label"),
+                    "guardrail_profile_id": row.get("guardrail_profile_id"),
+                    "guardrail_model": row.get("guardrail_model"),
+                    "guardrail_provider": row.get("guardrail_provider"),
+                    "guardrail_prompt_name": row.get("guardrail_prompt_name"),
+                    "guardrail_input_contract": row.get("guardrail_input_contract"),
+                    "guardrail_adapter": row.get("guardrail_adapter"),
+                    "guardrail_access_mode": row.get("guardrail_access_mode"),
+                    "guardrail_risk_names": ",".join(row.get("guardrail_risk_names") or []),
+                    "guardrail_block_risk_names": ",".join(row.get("guardrail_block_risk_names") or []),
+                    "guardrail_prompt_normalizer": row.get("guardrail_prompt_normalizer"),
+                    "status": row.get("status"),
+                    "allow_rate": _format_value(_parse_optional_float(row.get("allow_rate"))),
+                    "block_rate": _format_value(_parse_optional_float(row.get("block_rate"))),
+                    "parser_malformed_rate": _format_value(
+                        _parse_optional_float(row.get("parser_malformed_rate"))
+                    ),
+                    "native_template_mismatch_rate": _format_value(
+                        _parse_optional_float(row.get("native_template_mismatch_rate"))
+                    ),
+                    "runtime_error_rate": _format_value(
+                        _parse_optional_float(row.get("runtime_error_rate"))
+                    ),
+                    "malformed_rate": _format_value(_parse_optional_float(row.get("malformed_rate"))),
+                    "safe_block_rate": _format_value(_parse_optional_float(row.get("safe_block_rate"))),
+                    "harmful_allow_rate": _format_value(
+                        _parse_optional_float(row.get("harmful_allow_rate"))
+                    ),
+                    "invalid_reasons": "; ".join(row.get("invalid_reasons") or []),
+                }
+            )
+
+    md_path = output_dir / "guardrail_operational_report.md"
+    lines = [
+        "# Guardrail Operational Report",
+        "",
+        "These rows are judged on operational validity before any full BER/F1 comparison.",
+        "",
+        "| Row | Adapter | Risks | Block risks | Normalizer | Status | Allow | Block | Parser malformed | Native mismatch | Runtime error | Total malformed | Safe block | Harmful allow | Reasons |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in rows:
+        lines.append(
+            "| "
+            f"{row.get('row_label')} | "
+            f"`{row.get('guardrail_adapter')}` | "
+            f"`{','.join(row.get('guardrail_risk_names') or []) or '-'}` | "
+            f"`{','.join(row.get('guardrail_block_risk_names') or []) or '-'}` | "
+            f"`{row.get('guardrail_prompt_normalizer') or '-'}` | "
+            f"`{row.get('status')}` | "
+            f"{_format_md_value(_parse_optional_float(row.get('allow_rate')))} | "
+            f"{_format_md_value(_parse_optional_float(row.get('block_rate')))} | "
+            f"{_format_md_value(_parse_optional_float(row.get('parser_malformed_rate')))} | "
+            f"{_format_md_value(_parse_optional_float(row.get('native_template_mismatch_rate')))} | "
+            f"{_format_md_value(_parse_optional_float(row.get('runtime_error_rate')))} | "
+            f"{_format_md_value(_parse_optional_float(row.get('malformed_rate')))} | "
+            f"{_format_md_value(_parse_optional_float(row.get('safe_block_rate')))} | "
+            f"{_format_md_value(_parse_optional_float(row.get('harmful_allow_rate')))} | "
+            f"{'; '.join(row.get('invalid_reasons') or []) or 'ok'} |"
+        )
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {
+        "guardrail_operational_metrics_csv": str(csv_path),
+        "guardrail_operational_report_md": str(md_path),
+    }
+
+
 def aggregate_from_manifest(manifest_path: Path, output_dir: Optional[Path] = None) -> Dict[str, str]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     out_dir = output_dir or manifest_path.parent
@@ -337,8 +442,9 @@ def aggregate_from_manifest(manifest_path: Path, output_dir: Optional[Path] = No
     harmful_success_csv = _write_pivot_csv(records, "harmful_prompt_success_rate", out_dir)
     safe_success_csv = _write_pivot_csv(records, "safe_prompt_success_rate", out_dir)
     report_md = _write_markdown(records, out_dir, metric_definition_version)
+    operational = _write_operational_outputs(manifest, out_dir)
 
-    return {
+    outputs = {
         "matrix_metrics_csv": str(long_csv),
         "matrix_ber_csv": str(ber_csv),
         "matrix_f1_csv": str(f1_csv),
@@ -346,6 +452,8 @@ def aggregate_from_manifest(manifest_path: Path, output_dir: Optional[Path] = No
         "matrix_safe_prompt_success_rate_csv": str(safe_success_csv),
         "matrix_report_md": str(report_md),
     }
+    outputs.update(operational)
+    return outputs
 
 
 def parse_args() -> argparse.Namespace:

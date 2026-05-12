@@ -13,6 +13,7 @@ import yaml
 from aggregate_matrix import aggregate_from_manifest
 from assistant_policy import METRIC_DEFINITION_VERSION
 from guardrails import merge_guardrail_profile
+from probe_guardrail_profiles import run_probe
 
 DEFAULT_LOCAL_JUDGE_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
 
@@ -150,6 +151,14 @@ def _build_run_eval_command(
         "guardrail_adapter",
         "guardrail_access_mode",
         "guardrail_profile_id",
+        "guardrail_malformed_policy",
+        "guardrail_max_new_tokens",
+        "guardrail_generation_kwargs",
+        "guardrail_batch_size",
+        "guardrail_load_kwargs",
+        "guardrail_risk_names",
+        "guardrail_block_risk_names",
+        "guardrail_prompt_normalizer",
     ]:
         if row_cfg.get(key) is not None:
             config_payload.setdefault(key, row_cfg.get(key))
@@ -220,11 +229,39 @@ def main() -> None:
         "local_hf_judge_enforced": True,
         "default_local_judge_model": DEFAULT_LOCAL_JUDGE_MODEL,
         "global": global_cfg,
+        "invalid_row_policy": global_cfg.get("invalid_row_policy", "exclude_main"),
         "runs": [],
     }
     _write_manifest(manifest_path, manifest)
 
     any_failures = False
+    invalid_guardrail_rows: Dict[str, Dict[str, Any]] = {}
+
+    probe_cfg = global_cfg.get("guardrail_probe") or {}
+    if probe_cfg.get("enabled"):
+        probe_output_dir = output_dir / "probe"
+        probe_outputs = run_probe(
+            matrix_config_path=matrix_config_path,
+            output_dir=probe_output_dir,
+            seed=int(probe_cfg.get("seed", 1)),
+            harmful_rows_per_variant=int(probe_cfg.get("harmful_rows_per_variant", 12)),
+            safe_rows_per_variant=int(probe_cfg.get("safe_rows_per_variant", 6)),
+            max_malformed_rate=float(probe_cfg.get("max_malformed_rate", 0.05)),
+            max_runtime_error_rate=float(probe_cfg.get("max_runtime_error_rate", 0.0)),
+            require_nonzero_allow_rate=bool(probe_cfg.get("require_nonzero_allow_rate", True)),
+        )
+        probe_payload = probe_outputs["payload"]
+        manifest["guardrail_probe"] = {
+            "manifest_path": probe_outputs["manifest_path"],
+            "samples_path": probe_outputs["samples_path"],
+            "report_path": probe_outputs["report_path"],
+            "thresholds": probe_payload.get("thresholds") or {},
+            "rows": probe_payload.get("rows") or [],
+        }
+        for row in probe_payload.get("rows") or []:
+            if row.get("status") == "invalid":
+                invalid_guardrail_rows[str(row.get("row_id"))] = row
+        _write_manifest(manifest_path, manifest)
 
     for idx, row in enumerate(rows, start=1):
         if not isinstance(row, dict):
@@ -233,6 +270,41 @@ def main() -> None:
         row_id = str(row.get("id") or f"row_{idx}")
         row_label = str(row.get("label") or row_id)
         row_cfg = _merge_row(global_cfg, row)
+        guardrail_profile_id = row_cfg.get("guardrail_profile_id")
+        if guardrail_profile_id and row_id in invalid_guardrail_rows:
+            probe_row = invalid_guardrail_rows[row_id]
+            record = {
+                "row_id": row_id,
+                "row_label": row_label,
+                "status": "skipped_after_probe",
+                "return_code": None,
+                "started_utc": None,
+                "ended_utc": None,
+                "command": None,
+                "run_dir": None,
+                "stdout_path": None,
+                "stderr_path": None,
+                "guardrail_profile_id": row_cfg.get("guardrail_profile_id"),
+                "guardrail_model": row_cfg.get("guardrail_model"),
+                "guardrail_provider": row_cfg.get("guardrail_provider"),
+                "guardrail_input_contract": row_cfg.get("guardrail_input_contract"),
+                "guardrail_adapter": row_cfg.get("guardrail_adapter"),
+                "guardrail_access_mode": row_cfg.get("guardrail_access_mode"),
+                "probe_status": probe_row.get("status"),
+                "probe_invalid_reasons": probe_row.get("invalid_reasons") or [],
+                "probe_metrics": {
+                    "allow_rate": probe_row.get("allow_rate"),
+                    "block_rate": probe_row.get("block_rate"),
+                    "malformed_rate": probe_row.get("malformed_rate"),
+                    "runtime_error_rate": probe_row.get("runtime_error_rate"),
+                    "safe_block_rate": probe_row.get("safe_block_rate"),
+                    "harmful_allow_rate": probe_row.get("harmful_allow_rate"),
+                },
+            }
+            manifest["runs"].append(record)
+            _write_manifest(manifest_path, manifest)
+            print(f"[{idx}/{len(rows)}] {row_id}: skipped_after_probe")
+            continue
 
         cmd = _build_run_eval_command(
             python_exe=sys.executable,

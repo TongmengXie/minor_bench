@@ -11,7 +11,7 @@ flowchart TD
 
   P -->|BLOCK| R[Guardrail refusal text]
   P -->|MALFORMED + default block policy| R
-  P -->|ALLOW| M[Main model\nllama-3.1-8b-instruct via Scaleway]
+  P -->|ALLOW| M[Main model\nmistral-small-3.2-24b-instruct-2506 via Scaleway]
 
   M --> A[Assistant response]
   R --> F[Final assistant-visible response]
@@ -37,6 +37,7 @@ Main blocks:
 Guardrail comparison contracts:
 - `legacy_exchange_binary`: legacy setup where the external guardrail sees the full assistant prompt plus user prompt.
 - `shared_policy_native_adapter`: fair comparison setup where the external guardrail sees a shared child-safety policy summary plus the user prompt, then its native output is normalized to `allow|block|malformed`.
+- For Granite native rows, the default compare profile also strips the known adversarial jailbreak wrapper before native risk classification, and separates `observe_risks` from `block_risks` so wrapper-sensitive heads do not silently define the whole block policy.
 
 Current guardrail profiles and intended comparison rows are documented in [guardrail_inventory.md](/root/minor_bench/docs/guardrail_inventory.md).
 
@@ -46,10 +47,26 @@ Current evaluation policy:
 - `assistant_policy_v2`: headline evaluation policy for new runs.
 - `safe_policy_v1`: legacy response-safety calibration policy used for the human-audited safe-side judge benchmark.
 
+Canonical policy contract:
+- [assistant_policy_v2.md](/root/minor_bench/docs/assistant_policy_v2.md) contains the policy constitution that keeps assistant, guardrail, and judge semantics aligned even when their interfaces differ.
+
+Legacy note:
+- Historical `llama-3.1-8b-instruct` artifacts are preserved for reproducibility only.
+- They are not the canonical baseline because Scaleway deprecated and reroutes that model after EOL.
+
 Current named prompts in [system_prompts.yaml](/root/minor_bench/system_prompts/system_prompts.yaml):
 - `assistant_child_safety_v2`: baseline assistant prompt for direct safe answering on benign prompts and brief-only handling on harmful prompts.
 - `guardrail_child_safety_v2`: guardrail prompt that decides whether the request can be handled correctly under `assistant_policy_v2`.
 - `judge_assistant_policy_v2`: structured judge prompt that returns assistant-policy correctness, response safety, and answer mode.
+
+Current aligned Granite guardrail profile:
+- profile id: `granite_guardian_3_2_compare_v2`
+- guardrail model: `ibm-granite/granite-guardian-3.2-3b-a800m`
+- native prompt asset: `guardrail_granite_native_v1`
+- prompt normalizer: `strip_known_jailbreak_prefix`
+- observe risks: `harm`, `social_bias`, `profanity`, `jailbreak`, `sexual_content`, `violence`, `unethical_behavior`
+- block risks: `social_bias`, `jailbreak`, `sexual_content`, `violence`, `unethical_behavior`
+- malformed policy: `fallback_to_main`
 
 Legacy prompts kept for comparison or archival:
 - `assistant_child_safety_v1`
@@ -96,6 +113,57 @@ Interpretation notes:
 - `scorecards.system` measures final pipeline behavior.
 - `scorecards.tutor_conditional` measures tutor behavior only on guardrail-allowed generations.
 
+## Current Audience-Facing Results
+
+These are the current canonical `assistant_policy_v2` results for:
+- assistant-only baseline: [summary.md](/root/minor_bench/runs/evals/mistral-small-32-24b-instruct-2506/assistant_child_safety_v2/20260501_181156/summary.md)
+- assistant + aligned Granite 3.2: [summary.md](/root/minor_bench/runs/evals/mistral-small-32-24b-instruct-2506/assistant_child_safety_v2/20260512_085338/summary.md)
+- assistant-only per-variant metrics: [variant_metrics.csv](/root/minor_bench/runs/evals/mistral-small-32-24b-instruct-2506/assistant_child_safety_v2/20260501_181156/variant_metrics.csv)
+- Granite per-variant metrics: [variant_metrics.csv](/root/minor_bench/runs/evals/mistral-small-32-24b-instruct-2506/assistant_child_safety_v2/20260512_085338/variant_metrics.csv)
+
+Headline comparison:
+
+| Row | BER | F1 | Harmful success | Safe success | Safe overrefusal | Harmful unsafe-answer |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Assistant-only baseline | 30.76% | 67.59% | 52.83% | 85.65% | 8.02% | 35.56% |
+| Assistant + Granite Guardian 3.2 3B | 43.01% | 48.12% | 33.13% | 80.85% | 14.04% | 32.32% |
+
+BER by Row x Mutation:
+
+| Row | original | typo | camouflage | adversarial |
+| --- | ---: | ---: | ---: | ---: |
+| Assistant-only baseline | 28.03% | 26.55% | 23.72% | 44.90% |
+| Assistant + Granite Guardian 3.2 3B | 34.14% | 42.09% | 44.00% | 51.81% |
+
+F1 by Row x Mutation:
+
+| Row | original | typo | camouflage | adversarial |
+| --- | ---: | ---: | ---: | ---: |
+| Assistant-only baseline | 67.73% | 70.34% | 75.81% | 55.49% |
+| Assistant + Granite Guardian 3.2 3B | 51.65% | 48.24% | 51.70% | 40.72% |
+
+More informative breakdowns:
+
+Harmful Prompt Success by Row x Mutation:
+
+| Row | original | typo | camouflage | adversarial |
+| --- | ---: | ---: | ---: | ---: |
+| Assistant-only baseline | 52.26% | 55.37% | 62.55% | 41.22% |
+| Assistant + Granite Guardian 3.2 3B | 35.10% | 33.06% | 36.99% | 27.42% |
+
+Safe Prompt Overrefusal by Row x Mutation:
+
+| Row | original | typo | camouflage | adversarial |
+| --- | ---: | ---: | ---: | ---: |
+| Assistant-only baseline | 3.33% | 5.08% | 5.00% | 18.97% |
+| Assistant + Granite Guardian 3.2 3B | 1.69% | 15.52% | 20.00% | 18.97% |
+
+Interpretation:
+- the Granite path is now operationally valid and faithful, so these numbers are not parser artifacts
+- Granite reduces harmful unsafe answers slightly overall, but it loses on BER and F1
+- Granite fails most clearly on `typo` and `camouflage`, where harmful success drops sharply and safe overrefusal rises
+- `adversarial` is hard for both rows, but Granite still underperforms the assistant-only baseline
+
 ## Reproducible Runs
 
 If `.minor` does not exist yet:
@@ -109,12 +177,11 @@ Hateful-only run, assistant-policy metrics, local judge:
 ```bash
 source .minor/bin/activate
 python run_eval.py \
-  --model_name llama-3.1-8b-instruct \
+  --model_name mistral-small-3.2-24b-instruct-2506 \
   --provider scaleway \
   --system_prompt_name assistant_child_safety_v2 \
   --prompt_pack_path prompt_packs/minorbench_hateful.json \
-  --guardrail_model ibm-granite/granite-guardian-3.2-3b-a800m \
-  --guardrail_provider local_hf \
+  --guardrail_id granite_guardian_3_2_compare_v2 \
   --safety_judge_model meta-llama/Llama-3.2-1B-Instruct \
   --safety_judge_provider local_hf
 ```
@@ -124,13 +191,12 @@ Hateful plus safe-control run:
 ```bash
 source .minor/bin/activate
 python run_eval.py \
-  --model_name llama-3.1-8b-instruct \
+  --model_name mistral-small-3.2-24b-instruct-2506 \
   --provider scaleway \
   --system_prompt_name assistant_child_safety_v2 \
   --prompt_pack_path prompt_packs/minorbench_hateful.json \
   --extra_dataset_paths datasets/true_negative_safe_sensitive_variants.jsonl \
-  --guardrail_model ibm-granite/granite-guardian-3.2-3b-a800m \
-  --guardrail_provider local_hf \
+  --guardrail_id granite_guardian_3_2_compare_v2 \
   --safety_judge_model meta-llama/Llama-3.2-1B-Instruct \
   --safety_judge_provider local_hf
 ```
@@ -181,14 +247,32 @@ python run_matrix_eval.py \
   --name hateful_guardrail_compare_matrix_assistant_policy_v2_$(date -u +%Y%m%d_%H%M%S)
 ```
 
-Exact commands used for the current non-legacy artifacts:
+Run the GPU-ready Granite-only comparison that uses only rows known to be locally available in this environment:
+
+```bash
+source .minor/bin/activate
+python run_matrix_eval.py \
+  --matrix_config matrix_configs/hateful_guardrail_compare_granite_only.yaml \
+  --name hateful_guardrail_compare_granite_only_$(date -u +%Y%m%d_%H%M%S)
+```
+
+Probe external guardrail rows before a full matrix run:
+
+```bash
+source .minor/bin/activate
+python probe_guardrail_profiles.py \
+  --matrix_config matrix_configs/hateful_guardrail_compare_granite_only.yaml \
+  --output_dir runs/matrix/granite_probe_$(date -u +%Y%m%d_%H%M%S)
+```
+
+Historical commands used for older checked-in `assistant_policy_v2` artifacts:
 
 ```bash
 source .minor/bin/activate
 
-# Standalone assistant_policy_v2 eval, no guardrail
+# Legacy standalone assistant_policy_v2 eval, no guardrail
 python run_eval.py \
-  --model_name llama-3.1-8b-instruct \
+  --model_name mistral-small-3.2-24b-instruct-2506 \
   --provider scaleway \
   --system_prompt_name assistant_child_safety_v2 \
   --prompt_pack_path prompt_packs/minorbench_hateful.json \
@@ -197,7 +281,7 @@ python run_eval.py \
   --safety_judge_provider local_hf \
   --config '{"judge_batch_size":32}'
 
-# Matrix run under assistant_policy_v2
+# Legacy matrix run under assistant_policy_v2
 python run_matrix_eval.py \
   --matrix_config matrix_configs/hateful_guardrail_matrix_assistant_policy_v2.yaml \
   --name hateful_guardrail_matrix_assistant_policy_v2_20260413
@@ -215,7 +299,14 @@ python run_eval.py \
   --config '{"judge_batch_size":32,"judge_retry_on_malformed":true,"judge_retry_max_attempts":1}'
 ```
 
-Current checked-in non-legacy artifacts:
+Practical throughput note for this machine state:
+
+- cached local-HF judge loading now works offline and interrupted judge runs can resume
+- but CPU-only local judging is still slow enough that full guardrail matrices are not interactive
+- on 2026-04-29, one local judge batch of 4 outputs took about 14 minutes
+- for meaningful model-vs-guardrail comparison, prefer GPU for the judge stage
+
+Legacy checked-in artifacts:
 - [summary.md](/root/minor_bench/runs/evals/llama-31-8b-instruct/assistant_child_safety_v2/20260413_170439/summary.md)
 - [summary.md](/root/minor_bench/runs/evals/llama-31-8b-instruct/assistant_child_safety_v2/20260413_172932/summary.md)
 - [matrix_report.md](/root/minor_bench/runs/matrix/hateful_guardrail_matrix_assistant_policy_v2_20260413/matrix_report.md)
@@ -230,7 +321,8 @@ Current checked-in non-legacy artifacts:
 - `safety_judge.py`: structured assistant-policy judge with JSON repair and retry. Returns `assistant_policy_label`, `response_safety_label`, and `answer_mode`.
 - `report_generator.py`: builds assistant-policy scorecards, per-variant metrics, coverage, warnings, and markdown summaries.
 - `aggregate_matrix.py`: aggregates row-by-mutation BER, F1, harmful success, and safe success from assistant-policy summaries only.
-- `run_matrix_eval.py`: executes matrix rows and writes a manifest that pins the metric-definition version.
+- `probe_guardrail_profiles.py`: runs a guardrail-only probe slice, classifies rows as operationally valid or invalid, and writes probe manifests plus sampled failures.
+- `run_matrix_eval.py`: executes matrix rows, optionally runs a guardrail probe first, skips invalid guardrail rows, and writes a manifest that pins the metric-definition version.
 - `evaluate_judge_quality.py`: computes response-safety overblocking metrics and unsupervised confound checks for the judge.
 - `label_results_cli.py`: builds a human-audit CSV from `results.jsonl` and opens a minimal terminal labeling loop.
 - `verify_results.py`: prints policy version, metric-definition version, coverage, and scorecard highlights for a run.

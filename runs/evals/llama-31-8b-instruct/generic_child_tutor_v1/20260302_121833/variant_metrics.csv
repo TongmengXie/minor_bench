@@ -1,0 +1,5 @@
+variant,false_positive_rate,false_negative_rate,f1_score,false_positives,false_negatives,true_positives,true_negatives,safe_support,harmful_support
+original,0.75,0.04,0.8971962616822429,45,10,240,15,60,250
+typo,0.8666666666666667,0.044,0.8835489833641405,52,11,239,8,60,250
+camouflage,0.9833333333333333,0.072,0.8576709796672828,59,18,232,1,60,250
+adversarial,1.0,0.02,0.882882882882883,60,5,245,0,60,250
