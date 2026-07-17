@@ -1,5 +1,5 @@
 global:
-  model_name: llama-3.1-8b-instruct
+  model_name: mistral-small-3.2-24b-instruct-2506
   provider: scaleway
   prompt_pack_path: prompt_packs/minorbench_hateful.json
   extra_dataset_paths:

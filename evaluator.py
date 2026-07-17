@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
 from assistant_policy import (
-    derive_assistant_policy_label,
     infer_answer_mode,
     normalize_prompt_label,
     normalize_response_safety_label,
+    resolve_effective_policy_outcome,
 )
 from tqdm import tqdm
 from safety_classifier import SafetyClassifier
@@ -256,6 +256,27 @@ class Evaluator:
             )
         return str(generation)
 
+    @staticmethod
+    def _extract_generation_raw(generation: Any) -> Dict[str, Any]:
+        if not isinstance(generation, dict):
+            return {}
+        raw = generation.get("raw")
+        if isinstance(raw, dict):
+            return raw
+        return generation
+
+    @classmethod
+    def _is_infrastructure_failure(cls, generation: Any) -> bool:
+        raw = cls._extract_generation_raw(generation)
+        finish_reason = str(raw.get("finish_reason") or "").strip().lower()
+        error = raw.get("error")
+        return finish_reason == "error" and bool(error)
+
+    @classmethod
+    def _infrastructure_failure_reason(cls, generation: Any) -> str:
+        raw = cls._extract_generation_raw(generation)
+        return str(raw.get("error") or "generation_infrastructure_failure")
+
     def evaluate_prompt(
         self,
         model_runner: Any,
@@ -292,13 +313,7 @@ class Evaluator:
 
             # Normalize common response formats into a string
             if isinstance(raw, dict):
-                text = (
-                    raw.get("text")
-                    or raw.get("output")
-                    or raw.get("content")
-                    or raw.get("completion")
-                    or str(raw)
-                )
+                text = self._extract_generation_text(raw)
                 
                 generations.append({"index": i, "text": text, "raw": raw})
                 decision_status = raw.get("guardrail_decision_status")
@@ -580,6 +595,7 @@ class Evaluator:
             response_safety_labels: List[str] = []
             answer_mode_labels: List[str] = []
             assistant_policy_reasons: List[List[str]] = []
+            policy_outcome_sources: List[str] = []
             safe_count = 0
             unsafe_count = 0
             unknown_count = 0
@@ -598,25 +614,40 @@ class Evaluator:
 
             for generation in generations:
                 text = self._extract_generation_text(generation)
-                outcome = classifier.classify(text)
-                label = str(outcome.get("label") or "unknown").strip().lower()
-                if label not in {"safe", "unsafe"}:
+                if self._is_infrastructure_failure(generation):
                     label = "unknown"
+                    reasons = [self._infrastructure_failure_reason(generation)]
+                    final_response_source = self._final_response_source_for_generation(generation)
+                    answer_mode = infer_answer_mode(text, final_response_source)
+                    assistant_policy_label = "unknown"
+                else:
+                    outcome = classifier.classify(text)
+                    label = str(outcome.get("label") or "unknown").strip().lower()
+                    if label not in {"safe", "unsafe"}:
+                        label = "unknown"
+                    reasons = outcome.get("reasons") or []
+                    if not isinstance(reasons, list):
+                        reasons = [str(reasons)]
+                    final_response_source = self._final_response_source_for_generation(generation)
+                    answer_mode = infer_answer_mode(text, final_response_source)
+                    effective = resolve_effective_policy_outcome(
+                        prompt_label=is_harmful,
+                        final_response_source=final_response_source,
+                        judge_outcome={
+                            "response_safety_label": label,
+                            "answer_mode": answer_mode,
+                        },
+                    )
+                    label = effective["response_safety_label"]
+                    answer_mode = effective["answer_mode"]
+                    assistant_policy_label = effective["assistant_policy_label"]
+                    policy_outcome_sources.append(effective["policy_outcome_source"])
+                if self._is_infrastructure_failure(generation):
+                    policy_outcome_sources.append("infrastructure_failure")
+
                 classifications.append(label)
-
-                reasons = outcome.get("reasons") or []
-                if not isinstance(reasons, list):
-                    reasons = [str(reasons)]
                 failure_reasons.append([str(reason) for reason in reasons])
-
                 response_safety_labels.append(label)
-                final_response_source = self._final_response_source_for_generation(generation)
-                answer_mode = infer_answer_mode(text, final_response_source)
-                assistant_policy_label = derive_assistant_policy_label(
-                    prompt_label=is_harmful,
-                    response_safety_label=label,
-                    answer_mode=answer_mode,
-                )
                 answer_mode_labels.append(answer_mode)
                 assistant_policy_labels.append(assistant_policy_label)
                 assistant_policy_reasons.append([str(reason) for reason in reasons])
@@ -627,7 +658,6 @@ class Evaluator:
                     unsafe_count += 1
                 else:
                     unknown_count += 1
-                    unsafe_count += 1
 
             row["n_generations"] = len(generations)
             row["safe_count"] = safe_count
@@ -639,6 +669,7 @@ class Evaluator:
             row["answer_mode_labels"] = answer_mode_labels
             row["assistant_policy_labels"] = assistant_policy_labels
             row["assistant_policy_reasons"] = assistant_policy_reasons
+            row["policy_outcome_source"] = policy_outcome_sources
 
         if results_path:
             with results_path.open("w", encoding="utf-8") as handle:
@@ -657,77 +688,118 @@ class Evaluator:
         judge_batch_size = int(judge_config.get("judge_batch_size", 8))
         flattened: List[Dict[str, Any]] = []
 
-        for row_index, row in enumerate(results):
-            generations = row.get("generations", []) or []
-            metadata = row.get("metadata", {}) or {}
-            if "dataset_source" not in row:
-                row["dataset_source"] = str(metadata.get("dataset") or "unknown")
-            is_harmful, label_source = self._resolve_is_harmful(
-                metadata,
-                dataset_source=row.get("dataset_source"),
-                prompt_pack_name=row.get("prompt_pack_name"),
-                prompt_pack_subset=row.get("prompt_pack_subset"),
+        def _placeholder_outcome() -> Dict[str, Any]:
+            return {
+                "response_safety_label": "unknown",
+                "answer_mode": "unknown",
+                "assistant_policy_label": "unknown",
+                "reasons": [],
+                "raw": "",
+                "usage": None,
+                "cost_usd": None,
+                "judge_malformed": False,
+                "judge_parse_method": "missing",
+            }
+
+        def _infrastructure_failure_outcome(generation: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "response_safety_label": "unknown",
+                "answer_mode": infer_answer_mode(
+                    self._extract_generation_text(generation),
+                    self._final_response_source_for_generation(generation),
+                ),
+                "assistant_policy_label": "unknown",
+                "reasons": [self._infrastructure_failure_reason(generation)],
+                "raw": "",
+                "usage": None,
+                "cost_usd": None,
+                "judge_malformed": False,
+                "judge_parse_method": "skipped_infrastructure_failure",
+                "policy_outcome_source": "infrastructure_failure",
+            }
+
+        def _deterministic_guardrail_block_outcome(prompt_label: Any) -> Dict[str, Any]:
+            effective = resolve_effective_policy_outcome(
+                prompt_label=prompt_label,
+                final_response_source="guardrail_block",
             )
-            row["is_harmful"] = is_harmful
-            row["label_source"] = label_source
-            prompt_label = normalize_prompt_label(is_harmful)
-            user_prompt = row.get("prompt_text") or ""
+            return {
+                **effective,
+                "reasons": ["deterministic_guardrail_block"],
+                "raw": "",
+                "usage": None,
+                "cost_usd": None,
+                "judge_malformed": False,
+                "judge_parse_method": "deterministic_guardrail_block",
+            }
 
-            for generation_index, generation in enumerate(generations):
-                flattened.append(
-                    {
-                        "row_index": row_index,
-                        "generation_index": generation_index,
-                        "user_prompt": user_prompt,
-                        "response_text": self._extract_generation_text(generation),
-                        "prompt_label": prompt_label,
-                        "final_response_source": self._final_response_source_for_generation(generation),
-                    }
-                )
-
-        outcomes_by_row: Dict[int, List[Dict[str, Any]]] = {
-            row_index: [] for row_index in range(len(results))
-        }
-
-        if flattened:
-            if getattr(judge, "provider", None) == "local_hf" and hasattr(judge, "judge_batch"):
-                flat_iter = range(0, len(flattened), judge_batch_size)
-                if flattened:
-                    flat_iter = tqdm(flat_iter, desc="judge rows")
-                for start in flat_iter:
-                    chunk = flattened[start : start + judge_batch_size]
-                    chunk_outcomes = judge.judge_batch(
-                        [item["user_prompt"] for item in chunk],
-                        [item["response_text"] for item in chunk],
-                        [item["prompt_label"] for item in chunk],
-                        [item["final_response_source"] for item in chunk],
-                    )
-                    for item, outcome in zip(chunk, chunk_outcomes):
-                        outcomes_by_row[item["row_index"]].append(outcome)
-            else:
-                row_iter = results
-                if results:
-                    row_iter = tqdm(results, desc="judge rows")
-                for row_index, row in enumerate(row_iter):
-                    generations = row.get("generations", []) or []
-                    user_prompt = row.get("prompt_text") or ""
-                    prompt_label = normalize_prompt_label(row.get("is_harmful"))
-                    for generation in generations:
-                        response_text = self._extract_generation_text(generation)
-                        try:
-                            outcome = judge.judge(
-                                user_prompt=user_prompt,
-                                response_text=response_text,
-                                prompt_label=prompt_label,
-                                final_response_source=self._final_response_source_for_generation(generation),
-                            )
-                        except TypeError:
-                            outcome = judge.judge(row.get("system_prompt") or user_prompt, response_text)
-                        outcomes_by_row[row_index].append(outcome)
-
-        for row_index, row in enumerate(results):
+        def _rehydrate_existing_outcomes(row: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
             generations = row.get("generations", []) or []
-            outcomes = outcomes_by_row.get(row_index, [])
+            response_safety_labels = list(row.get("response_safety_labels") or [])
+            answer_mode_labels = list(row.get("answer_mode_labels") or [])
+            assistant_policy_labels = list(row.get("assistant_policy_labels") or [])
+            reasons_list = list(row.get("assistant_policy_reasons") or row.get("failure_reasons") or [])
+            raw_outputs = list(row.get("judge_raw_outputs") or [])
+            usages = list(row.get("judge_usage") or row.get("judge_usages") or [])
+            costs = list(row.get("judge_cost_usd") or row.get("judge_costs_usd") or [])
+            malformed_list = list(row.get("judge_malformed") or [])
+            parse_methods = list(row.get("judge_parse_method") or [])
+
+            max_count = min(
+                len(generations),
+                max(
+                    [
+                        len(response_safety_labels),
+                        len(answer_mode_labels),
+                        len(assistant_policy_labels),
+                        len(reasons_list),
+                        len(raw_outputs),
+                        len(usages),
+                        len(costs),
+                        len(malformed_list),
+                        len(parse_methods),
+                    ],
+                    default=0,
+                ),
+            )
+
+            outcomes: Dict[int, Dict[str, Any]] = {}
+            for idx in range(max_count):
+                reasons = reasons_list[idx] if idx < len(reasons_list) else []
+                if not isinstance(reasons, list):
+                    reasons = [str(reasons)]
+                outcomes[idx] = {
+                    "response_safety_label": response_safety_labels[idx]
+                    if idx < len(response_safety_labels)
+                    else "unknown",
+                    "answer_mode": answer_mode_labels[idx] if idx < len(answer_mode_labels) else "unknown",
+                    "assistant_policy_label": assistant_policy_labels[idx]
+                    if idx < len(assistant_policy_labels)
+                    else "unknown",
+                    "reasons": [str(reason) for reason in reasons],
+                    "raw": raw_outputs[idx] if idx < len(raw_outputs) else "",
+                    "usage": usages[idx] if idx < len(usages) else None,
+                    "cost_usd": costs[idx] if idx < len(costs) else None,
+                    "judge_malformed": bool(malformed_list[idx]) if idx < len(malformed_list) else False,
+                    "judge_parse_method": parse_methods[idx] if idx < len(parse_methods) else "unknown",
+                }
+            return outcomes
+
+        def _apply_judge_outcomes(
+            row: Dict[str, Any],
+            outcomes_by_index: Dict[int, Dict[str, Any]],
+        ) -> None:
+            generations = row.get("generations", []) or []
+            existing_judge_safety = list(
+                row.get("judge_response_safety_labels") or row.get("response_safety_labels") or []
+            )
+            existing_judge_policy = list(
+                row.get("judge_assistant_policy_labels") or row.get("assistant_policy_labels") or []
+            )
+            existing_judge_modes = list(
+                row.get("judge_answer_mode_labels") or row.get("answer_mode_labels") or []
+            )
+            existing_raw_outputs = list(row.get("judge_raw_outputs") or [])
             classifications: List[str] = []
             failure_reasons: List[List[str]] = []
             assistant_policy_labels: List[str] = []
@@ -739,14 +811,51 @@ class Evaluator:
             judge_costs: List[Optional[float]] = []
             judge_malformed: List[bool] = []
             judge_parse_methods: List[str] = []
+            policy_outcome_sources: List[str] = []
+            judge_response_safety_labels: List[str] = []
+            judge_assistant_policy_labels: List[str] = []
+            judge_answer_mode_labels: List[str] = []
             safe_count = 0
             unsafe_count = 0
             unknown_count = 0
 
-            for outcome in outcomes:
-                label = normalize_response_safety_label(
-                    outcome.get("response_safety_label") or outcome.get("label")
+            for generation_index, generation in enumerate(generations):
+                outcome = outcomes_by_index.get(generation_index)
+                if outcome is None:
+                    if self._is_infrastructure_failure(generation):
+                        outcome = _infrastructure_failure_outcome(generation)
+                    else:
+                        outcome = _placeholder_outcome()
+                final_response_source = self._final_response_source_for_generation(generation)
+                effective = resolve_effective_policy_outcome(
+                    prompt_label=row.get("is_harmful"),
+                    final_response_source=final_response_source,
+                    judge_outcome=outcome,
+                    infrastructure_failure=self._is_infrastructure_failure(generation),
                 )
+                deterministic_block = effective["policy_outcome_source"] == "deterministic_guardrail_block"
+                judge_response_safety_labels.append(
+                    normalize_response_safety_label(
+                        existing_judge_safety[generation_index]
+                        if deterministic_block and generation_index < len(existing_judge_safety)
+                        else outcome.get("response_safety_label") or outcome.get("label")
+                    )
+                )
+                judge_assistant_policy_labels.append(
+                    str(
+                        existing_judge_policy[generation_index]
+                        if deterministic_block and generation_index < len(existing_judge_policy)
+                        else outcome.get("assistant_policy_label") or "unknown"
+                    ).strip().lower()
+                )
+                judge_answer_mode_labels.append(
+                    str(
+                        existing_judge_modes[generation_index]
+                        if deterministic_block and generation_index < len(existing_judge_modes)
+                        else outcome.get("answer_mode") or "unknown"
+                    ).strip().lower()
+                )
+                label = normalize_response_safety_label(effective["response_safety_label"])
                 if label not in {"safe", "unsafe"}:
                     label = "unknown"
                 classifications.append(label)
@@ -757,15 +866,22 @@ class Evaluator:
                     reasons = [str(reasons)]
                 failure_reasons.append([str(reason) for reason in reasons])
                 assistant_policy_reasons.append([str(reason) for reason in reasons])
-                raw_outputs.append(str(outcome.get("raw") or ""))
+                raw_outputs.append(
+                    str(
+                        existing_raw_outputs[generation_index]
+                        if deterministic_block and generation_index < len(existing_raw_outputs)
+                        else outcome.get("raw") or ""
+                    )
+                )
                 judge_usages.append(outcome.get("usage"))
                 judge_costs.append(outcome.get("cost_usd"))
                 judge_malformed.append(bool(outcome.get("judge_malformed", label == "unknown")))
                 judge_parse_methods.append(str(outcome.get("judge_parse_method") or "failed"))
-                answer_mode = str(outcome.get("answer_mode") or "unknown").strip().lower()
+                answer_mode = str(effective["answer_mode"])
                 answer_mode_labels.append(answer_mode)
-                assistant_policy_label = str(outcome.get("assistant_policy_label") or "unknown").strip().lower()
+                assistant_policy_label = str(effective["assistant_policy_label"])
                 assistant_policy_labels.append(assistant_policy_label)
+                policy_outcome_sources.append(str(effective["policy_outcome_source"]))
 
                 if label == "safe":
                     safe_count += 1
@@ -773,7 +889,6 @@ class Evaluator:
                     unsafe_count += 1
                 else:
                     unknown_count += 1
-                    unsafe_count += 1
 
             row["n_generations"] = len(generations)
             row["safe_count"] = safe_count
@@ -791,13 +906,125 @@ class Evaluator:
             row["judge_cost_usd"] = judge_costs
             row["judge_malformed"] = judge_malformed
             row["judge_parse_method"] = judge_parse_methods
+            row["policy_outcome_source"] = policy_outcome_sources
+            row["judge_response_safety_labels"] = judge_response_safety_labels
+            row["judge_assistant_policy_labels"] = judge_assistant_policy_labels
+            row["judge_answer_mode_labels"] = judge_answer_mode_labels
             row["all_classifications"] = classifications
             row["failure_reasons"] = failure_reasons
             row["safety_source"] = "llm_judge"
 
-        if results_path:
+        def _checkpoint_rows() -> None:
+            if not results_path:
+                return
             with results_path.open("w", encoding="utf-8") as handle:
-                for row in results:
-                    handle.write(json.dumps(row) + "\n")
+                for result_row in results:
+                    handle.write(json.dumps(result_row) + "\n")
+
+        outcomes_by_row: Dict[int, Dict[int, Dict[str, Any]]] = {
+            row_index: _rehydrate_existing_outcomes(results[row_index])
+            for row_index in range(len(results))
+        }
+
+        for row_index, row in enumerate(results):
+            generations = row.get("generations", []) or []
+            metadata = row.get("metadata", {}) or {}
+            if "dataset_source" not in row:
+                row["dataset_source"] = str(metadata.get("dataset") or "unknown")
+            is_harmful, label_source = self._resolve_is_harmful(
+                metadata,
+                dataset_source=row.get("dataset_source"),
+                prompt_pack_name=row.get("prompt_pack_name"),
+                prompt_pack_subset=row.get("prompt_pack_subset"),
+            )
+            row["is_harmful"] = is_harmful
+            row["label_source"] = label_source
+            prompt_label = normalize_prompt_label(is_harmful)
+            user_prompt = row.get("prompt_text") or ""
+            for generation_index, generation in enumerate(generations):
+                if self._is_infrastructure_failure(generation):
+                    outcomes_by_row[row_index][generation_index] = _infrastructure_failure_outcome(
+                        generation
+                    )
+                    continue
+                final_response_source = self._final_response_source_for_generation(generation)
+                if final_response_source == "guardrail_block":
+                    outcomes_by_row[row_index][generation_index] = (
+                        _deterministic_guardrail_block_outcome(prompt_label)
+                    )
+                    continue
+                if generation_index in outcomes_by_row[row_index]:
+                    continue
+                flattened.append(
+                    {
+                        "row_index": row_index,
+                        "generation_index": generation_index,
+                        "user_prompt": user_prompt,
+                        "response_text": self._extract_generation_text(generation),
+                        "prompt_label": prompt_label,
+                        "final_response_source": final_response_source,
+                    }
+                )
+
+        if flattened:
+            if getattr(judge, "provider", None) == "local_hf" and hasattr(judge, "judge_batch"):
+                flat_iter = range(0, len(flattened), judge_batch_size)
+                if flattened:
+                    flat_iter = tqdm(flat_iter, desc="judge rows")
+                for start in flat_iter:
+                    chunk = flattened[start : start + judge_batch_size]
+                    chunk_outcomes = judge.judge_batch(
+                        [item["user_prompt"] for item in chunk],
+                        [item["response_text"] for item in chunk],
+                        [item["prompt_label"] for item in chunk],
+                        [item["final_response_source"] for item in chunk],
+                    )
+                    touched_rows = set()
+                    for item, outcome in zip(chunk, chunk_outcomes):
+                        outcomes_by_row[item["row_index"]][item["generation_index"]] = outcome
+                        touched_rows.add(item["row_index"])
+                    for row_index in touched_rows:
+                        _apply_judge_outcomes(results[row_index], outcomes_by_row[row_index])
+                    _checkpoint_rows()
+            else:
+                row_iter = results
+                if results:
+                    row_iter = tqdm(results, desc="judge rows")
+                for row_index, row in enumerate(row_iter):
+                    generations = row.get("generations", []) or []
+                    user_prompt = row.get("prompt_text") or ""
+                    prompt_label = normalize_prompt_label(row.get("is_harmful"))
+                    for generation_index, generation in enumerate(generations):
+                        if self._is_infrastructure_failure(generation):
+                            outcomes_by_row[row_index][generation_index] = _infrastructure_failure_outcome(
+                                generation
+                            )
+                            continue
+                        final_response_source = self._final_response_source_for_generation(generation)
+                        if final_response_source == "guardrail_block":
+                            outcomes_by_row[row_index][generation_index] = (
+                                _deterministic_guardrail_block_outcome(prompt_label)
+                            )
+                            continue
+                        if generation_index in outcomes_by_row[row_index]:
+                            continue
+                        response_text = self._extract_generation_text(generation)
+                        try:
+                            outcome = judge.judge(
+                                user_prompt=user_prompt,
+                                response_text=response_text,
+                                prompt_label=prompt_label,
+                                final_response_source=final_response_source,
+                            )
+                        except TypeError:
+                            outcome = judge.judge(row.get("system_prompt") or user_prompt, response_text)
+                        outcomes_by_row[row_index][generation_index] = outcome
+                    _apply_judge_outcomes(results[row_index], outcomes_by_row[row_index])
+                    _checkpoint_rows()
+
+        for row_index, row in enumerate(results):
+            _apply_judge_outcomes(row, outcomes_by_row.get(row_index, {}))
+
+        _checkpoint_rows()
 
         return results

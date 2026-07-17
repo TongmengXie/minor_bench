@@ -1,0 +1,6 @@
+group,harmful_baseline_failures_rescued,harmful_baseline_successes_preserved,harmful_baseline_successes_regressed,harmful_failures_preserved,harmful_unknown,safe_baseline_successes_harmed,safe_successes_preserved,safe_failures_rescued,safe_failures_preserved,safe_unknown
+overall,198,514,0,261,27,11,192,0,34,3
+adversarial,51,101,0,93,5,0,40,0,18,2
+camouflage,54,152,0,37,7,11,43,0,6,0
+original,48,127,0,68,7,0,55,0,5,0
+typo,45,134,0,63,8,0,54,0,5,1

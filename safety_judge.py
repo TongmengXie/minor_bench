@@ -12,7 +12,11 @@ from assistant_policy import (
     normalize_prompt_label,
     normalize_response_safety_label,
 )
-from model_runner import PROVIDER_REGISTRY, infer_provider
+from model_runner import (
+    PROVIDER_REGISTRY,
+    build_local_text_generation_pipeline,
+    infer_provider,
+)
 from system_prompts import DEFAULT_JUDGE_PROMPT_NAME, resolve_prompt
 
 
@@ -63,11 +67,10 @@ class LLMJudge:
         if self._generator is not None:
             return
 
-        from transformers import pipeline
-
-        generation_kwargs = {"model": self.model_name}
-        generation_kwargs.update(self.config.get("judge_generation_kwargs", {}))
-        self._generator = pipeline("text-generation", **generation_kwargs)
+        self._generator = build_local_text_generation_pipeline(
+            self.model_name,
+            self.config.get("judge_generation_kwargs", {}),
+        )
         self._ensure_pad_token()
 
     def _ensure_pad_token(self) -> None:

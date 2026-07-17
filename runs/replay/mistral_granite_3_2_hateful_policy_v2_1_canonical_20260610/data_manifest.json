@@ -1,0 +1,31 @@
+{
+  "prompt_pack_path": "prompt_packs/minorbench_hateful.json",
+  "prompt_pack_name": "minorbench_hateful_v1",
+  "prompt_pack_subset": "Hateful",
+  "extra_dataset_paths": [
+    "datasets/true_negative_safe_sensitive_variants.jsonl"
+  ],
+  "include_variants": [],
+  "exclude_variants": [],
+  "total_items": 248,
+  "labeled_item_count": 248,
+  "labeled_coverage_rate": 1.0,
+  "counts_by_dataset_source": {
+    "prompt_pack:minorbench_hateful_v1": 200,
+    "true_negative_safe_sensitive_variants": 48
+  },
+  "counts_by_variant": {
+    "original": 62,
+    "typo": 62,
+    "camouflage": 62,
+    "adversarial": 62
+  },
+  "counts_by_harmful_label_state": {
+    "harmful": 200,
+    "safe": 48
+  },
+  "counts_by_label_source": {
+    "inferred_hateful": 200,
+    "explicit_is_harmful": 48
+  }
+}

@@ -3,11 +3,14 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aggregate_matrix import aggregate_from_manifest
+from assistant_policy import METRIC_DEFINITION_VERSION
 
 
 def _write_variant_metrics(path: Path) -> None:
@@ -53,7 +56,7 @@ def test_aggregate_from_manifest_writes_expected_artifacts(tmp_path: Path) -> No
     run_dir.mkdir(parents=True)
 
     summary = {
-        "metric_definition_version": "assistant_policy_v2",
+        "metric_definition_version": METRIC_DEFINITION_VERSION,
         "scorecards": {
             "system": {"f1_score": 0.5},
             "tutor_conditional": {"f1_score": 0.6},
@@ -141,3 +144,31 @@ def test_aggregate_from_manifest_writes_expected_artifacts(tmp_path: Path) -> No
     operational_md = Path(outputs["guardrail_operational_report_md"]).read_text(encoding="utf-8")
     assert "Guardrail Operational Report" in operational_md
     assert "Granite guardrail" in operational_md
+
+
+def test_aggregate_rejects_legacy_judge_scored_block_metrics(tmp_path: Path) -> None:
+    run_dir = tmp_path / "legacy_run"
+    run_dir.mkdir()
+    (run_dir / "summary.json").write_text(
+        json.dumps({"metric_definition_version": "assistant_policy_v2"}),
+        encoding="utf-8",
+    )
+    _write_variant_metrics(run_dir / "variant_metrics.csv")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "row_id": "legacy",
+                        "status": "success",
+                        "run_dir": str(run_dir),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="metric_definition_version"):
+        aggregate_from_manifest(manifest_path)

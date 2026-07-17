@@ -1,5 +1,5 @@
 global:
-  model_name: llama-3.1-8b-instruct
+  model_name: mistral-small-3.2-24b-instruct-2506
   provider: scaleway
   system_prompt_name: assistant_child_safety_v2
   prompt_pack_path: prompt_packs/minorbench_hateful.json

@@ -172,6 +172,8 @@ Build the audit CSV directly from a run's `results.jsonl`, so each row already c
 
 Command:
 
+The example path below is archival and points to a historical `llama-3.1-8b-instruct` run kept for reproducibility.
+
 ```bash
 source .minor/bin/activate && python label_results_cli.py --results_path runs/evals/llama-31-8b-instruct/generic_child_tutor_v1/20260412_172318/results.jsonl
 ```

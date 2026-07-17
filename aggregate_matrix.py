@@ -73,6 +73,15 @@ def _load_variant_metrics(run_dir: Path, summary: Dict[str, Any]) -> Dict[str, D
                     "harmful_prompt_unsafe_answer_rate": _parse_optional_float(
                         row.get("harmful_prompt_unsafe_answer_rate")
                     ),
+                    "safe_prompt_incorrect_handling_rate": _parse_optional_float(
+                        row.get("safe_prompt_incorrect_handling_rate")
+                    ),
+                    "safe_prompt_unsafe_answer_rate": _parse_optional_float(
+                        row.get("safe_prompt_unsafe_answer_rate")
+                    ),
+                    "safe_prompt_indirect_or_non_answer_rate": _parse_optional_float(
+                        row.get("safe_prompt_indirect_or_non_answer_rate")
+                    ),
                     "false_positives": _parse_optional_int(row.get("false_positives")) or 0,
                     "false_negatives": _parse_optional_int(row.get("false_negatives")) or 0,
                     "true_positives": _parse_optional_int(row.get("true_positives")) or 0,
@@ -169,6 +178,15 @@ def _collect_records(manifest: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], st
                 "harmful_prompt_unsafe_answer_rate": _parse_optional_float(
                     metrics.get("harmful_prompt_unsafe_answer_rate")
                 ),
+                "safe_prompt_incorrect_handling_rate": _parse_optional_float(
+                    metrics.get("safe_prompt_incorrect_handling_rate")
+                ),
+                "safe_prompt_unsafe_answer_rate": _parse_optional_float(
+                    metrics.get("safe_prompt_unsafe_answer_rate")
+                ),
+                "safe_prompt_indirect_or_non_answer_rate": _parse_optional_float(
+                    metrics.get("safe_prompt_indirect_or_non_answer_rate")
+                ),
                 "false_positives": _parse_optional_int(metrics.get("false_positives")) or 0,
                 "false_negatives": _parse_optional_int(metrics.get("false_negatives")) or 0,
                 "true_positives": _parse_optional_int(metrics.get("true_positives")) or 0,
@@ -222,6 +240,9 @@ def _write_long_csv(records: List[Dict[str, Any]], output_dir: Path) -> Path:
         "safe_prompt_success_rate",
         "safe_prompt_overrefusal_rate",
         "harmful_prompt_unsafe_answer_rate",
+        "safe_prompt_incorrect_handling_rate",
+        "safe_prompt_unsafe_answer_rate",
+        "safe_prompt_indirect_or_non_answer_rate",
         "false_positives",
         "false_negatives",
         "true_positives",
@@ -249,6 +270,9 @@ def _write_long_csv(records: List[Dict[str, Any]], output_dir: Path) -> Path:
                 "safe_prompt_success_rate",
                 "safe_prompt_overrefusal_rate",
                 "harmful_prompt_unsafe_answer_rate",
+                "safe_prompt_incorrect_handling_rate",
+                "safe_prompt_unsafe_answer_rate",
+                "safe_prompt_indirect_or_non_answer_rate",
                 "allow_rate",
                 "system_f1",
                 "tutor_conditional_f1",
@@ -296,6 +320,7 @@ def _write_markdown(records: List[Dict[str, Any]], output_dir: Path, metric_defi
         "## Metric notes",
         "- BER and F1 are computed from the assistant-policy confusion matrix.",
         "- TP/FN are harmful prompts handled correctly/incorrectly; TN/FP are safe prompts handled correctly/incorrectly.",
+        "- Safe-prompt overrefusal/block, indirect/non-answer, and unsafe-answer rates are drill-downs of safe-prompt incorrect handling.",
         "- BER averages failure on harmful prompts and failure on safe prompts equally; lower is better.",
         "- F1 is retained as a derived continuity metric; the more interpretable product metrics are harmful prompt success rate and safe prompt success rate.",
         "- Rows are evaluation configurations. Columns are prompt mutations.",
@@ -307,6 +332,9 @@ def _write_markdown(records: List[Dict[str, Any]], output_dir: Path, metric_defi
         ("f1_score", "F1"),
         ("harmful_prompt_success_rate", "Harmful Prompt Success Rate"),
         ("safe_prompt_success_rate", "Safe Prompt Success Rate"),
+        ("harmful_prompt_unsafe_answer_rate", "Harmful Prompt Unsafe-Answer Rate"),
+        ("safe_prompt_incorrect_handling_rate", "Safe Prompt Incorrect-Handling Rate"),
+        ("safe_prompt_overrefusal_rate", "Safe Prompt Overrefusal/Block Rate"),
     ]:
         row_ids, variants, values = _pivot(records, metric)
         lines.append(f"## {title} by Row x Mutation")
@@ -441,6 +469,9 @@ def aggregate_from_manifest(manifest_path: Path, output_dir: Optional[Path] = No
     f1_csv = _write_pivot_csv(records, "f1_score", out_dir)
     harmful_success_csv = _write_pivot_csv(records, "harmful_prompt_success_rate", out_dir)
     safe_success_csv = _write_pivot_csv(records, "safe_prompt_success_rate", out_dir)
+    harmful_unsafe_csv = _write_pivot_csv(records, "harmful_prompt_unsafe_answer_rate", out_dir)
+    safe_incorrect_csv = _write_pivot_csv(records, "safe_prompt_incorrect_handling_rate", out_dir)
+    safe_overrefusal_csv = _write_pivot_csv(records, "safe_prompt_overrefusal_rate", out_dir)
     report_md = _write_markdown(records, out_dir, metric_definition_version)
     operational = _write_operational_outputs(manifest, out_dir)
 
@@ -450,6 +481,9 @@ def aggregate_from_manifest(manifest_path: Path, output_dir: Optional[Path] = No
         "matrix_f1_csv": str(f1_csv),
         "matrix_harmful_prompt_success_rate_csv": str(harmful_success_csv),
         "matrix_safe_prompt_success_rate_csv": str(safe_success_csv),
+        "matrix_harmful_prompt_unsafe_answer_rate_csv": str(harmful_unsafe_csv),
+        "matrix_safe_prompt_incorrect_handling_rate_csv": str(safe_incorrect_csv),
+        "matrix_safe_prompt_overrefusal_rate_csv": str(safe_overrefusal_csv),
         "matrix_report_md": str(report_md),
     }
     outputs.update(operational)

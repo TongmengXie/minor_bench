@@ -2,7 +2,7 @@ source .minor/bin/activate
 
 # Hateful-only baseline with local_hf judge.
 python run_eval.py \
-     --model_name llama-3.1-8b-instruct \
+     --model_name mistral-small-3.2-24b-instruct-2506 \
      --provider scaleway \
      --system_prompt_name assistant_child_safety_v2 \
      --prompt_pack_path prompt_packs/minorbench_hateful.json \
@@ -11,7 +11,7 @@ python run_eval.py \
 
 # Hateful + safe controls (variantized) with local_hf judge.
 python run_eval.py \
-     --model_name llama-3.1-8b-instruct \
+     --model_name mistral-small-3.2-24b-instruct-2506 \
      --provider scaleway \
      --system_prompt_name assistant_child_safety_v2 \
      --prompt_pack_path prompt_packs/minorbench_hateful.json \
@@ -21,7 +21,7 @@ python run_eval.py \
 
 # Fair-comparison Granite row (shared policy summary + local_hf judge).
 python run_eval.py \
-     --model_name llama-3.1-8b-instruct \
+     --model_name mistral-small-3.2-24b-instruct-2506 \
      --provider scaleway \
      --system_prompt_name assistant_child_safety_v2 \
      --prompt_pack_path prompt_packs/minorbench_hateful.json \
@@ -31,7 +31,7 @@ python run_eval.py \
      --safety_judge_model meta-llama/Llama-3.2-1B-Instruct
 
 # judge_only
-python run_eval.py --judge_only --judge_only_path runs/evals/llama-31-8b-instruct/assistant_child_safety_v2/<timestamp> --safety_judge_model meta-llama/Llama-3.2-1B-Instruct --safety_judge_provider local_hf
+python run_eval.py --judge_only --judge_only_path runs/evals/<model>/assistant_child_safety_v2/<timestamp> --safety_judge_model meta-llama/Llama-3.2-1B-Instruct --safety_judge_provider local_hf
 
 # Fair external-guardrail comparison matrix (rows = assistant-only vs assistant + specific guardrail, columns = variants).
 python run_matrix_eval.py --matrix_config matrix_configs/hateful_guardrail_compare_matrix_assistant_policy_v2.yaml

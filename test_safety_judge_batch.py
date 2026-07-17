@@ -24,7 +24,11 @@ def test_judge_batch_local_hf(monkeypatch) -> None:
     monkeypatch.setattr(judge, "_init_local_hf", lambda: None)
     judge._generator = _FakeJudgeGenerator()
 
-    outputs = judge.judge_batch(["sys1", "sys2"], ["resp1", "resp2"])
+    outputs = judge.judge_batch(
+        ["sys1", "sys2"],
+        ["resp1", "resp2"],
+        ["safe", "harmful"],
+    )
     assert outputs[0]["label"] == "safe"
     assert outputs[1]["label"] == "safe"
 

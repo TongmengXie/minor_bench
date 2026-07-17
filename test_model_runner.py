@@ -26,7 +26,7 @@ def main():
     # )
     runner = ModelRunner(
         # model_name="gpt-4o-mini",
-        model_name="llama-3.1-8b-instruct",
+        model_name="mistral-small-3.2-24b-instruct-2506",
         provider="auto",  # or "auto"
         # config={"api_key": SCW_SECRET_KEY, "guardrail_model":"ibm-granite/granite-guardian-3.2-3b-a800m", "guardrail_provider": "local_hf"}  # or use env OPENAI_API_KEY / SCW_SECRET_KEY
         config={"api_key": SCW_SECRET_KEY, "guardrail_model":"nvidia/llama-3.1-nemoguard-8b-content-safety", "guardrail_provider": "local_hf"}

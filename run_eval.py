@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
         required=False,
         default="auto",
         choices=["auto", "local_hf", "openai", "openai_api", "scaleway"],
-        help="Provider or auto-infer (llama-3.1 ⇒ scaleway)",
+        help="Provider selection for the main model.",
     )
 
     parser.add_argument("--system_prompt_name", required=False)
@@ -315,6 +315,13 @@ def main() -> None:
         return
 
     model_runner = ModelRunner(args.model_name, args.provider, config=config)
+    preflight_meta = model_runner.preflight()
+    print(
+        "Main model preflight ok: "
+        f"provider={preflight_meta.get('provider')} "
+        f"requested={preflight_meta.get('requested_model')} "
+        f"response={preflight_meta.get('response_model')}"
+    )
     model_runner.judge_meta = (
         {
             "policy_version": config.get("policy_version"),
@@ -328,6 +335,7 @@ def main() -> None:
             "safety_judge_provider": config.get("safety_judge_provider", "auto"),
             "safety_judge_prompt": config.get("safety_judge_prompt"),
             "safety_judge_prompt_name": config.get("safety_judge_prompt_name") or DEFAULT_JUDGE_PROMPT_NAME,
+            "main_model_preflight": preflight_meta,
         }
         if use_judge
         else {
@@ -338,6 +346,7 @@ def main() -> None:
             "guardrail_prompt_name": getattr(model_runner, "guardrail_prompt_name", None),
             "guardrail_input_contract": getattr(model_runner, "guardrail_input_contract", None),
             "guardrail_adapter": getattr(model_runner, "guardrail_adapter", None),
+            "main_model_preflight": preflight_meta,
         }
     )
     results, output_dir = evaluator.evaluate_pack(
