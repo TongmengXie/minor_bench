@@ -1,0 +1,4 @@
+row_id,adversarial,camouflage,original,typo
+assistant_only_policy_v2,0.716667,0.762712,0.947368,0.883333
+granite_guardian_3_2_compare_v2,0.350000,0.600000,0.542373,0.666667
+granite_guardian_3_3_compare_v2,0.283333,0.593220,0.355932,0.483333
