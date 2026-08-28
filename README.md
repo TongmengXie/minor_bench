@@ -141,8 +141,12 @@ Interpretation:
 If `.minor` does not exist yet:
 
 ```bash
-uv venv .minor && source .minor/bin/activate && uv pip install -r requirements.txt
+uv venv .minor
+source .minor/bin/activate
+uv pip sync requirements.lock
 ```
+
+`requirements.lock` is the pinned environment file for new instances. `requirements.txt` is the human-maintained input.
 
 Hateful-only run, assistant-policy metrics, local judge:
 

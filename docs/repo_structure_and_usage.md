@@ -8,6 +8,7 @@ This document is the entry point for reconstructing the current benchmark state 
 - Synced commit checked before this document was added: `663cdca4168872648eb95369c8494c33e011ead2`
 - Current evaluation policy: `assistant_policy_v2`
 - Current metric definition: `assistant_policy_v2.1`
+- Dependency lockfile: `requirements.lock`
 - Canonical main model: `mistral-small-3.2-24b-instruct-2506` via Scaleway
 - Canonical local judge: `meta-llama/Llama-3.2-1B-Instruct` via `local_hf`
 - Canonical guardrail anchor: `ibm-granite/granite-guardian-3.2-3b-a800m` via `local_hf`
@@ -18,6 +19,7 @@ This document is the entry point for reconstructing the current benchmark state 
 In Git:
 
 - Source code, tests, prompt packs, safe-control datasets, policy docs, matrix configs.
+- `requirements.lock` for pinned Python package reproduction with `uv pip sync`.
 - Canonical corrected run outputs under `runs/evals/.../20260610_*`.
 - Canonical controlled replay outputs under `runs/replay/mistral_granite_3_2_hateful_policy_v2_1_canonical_20260610`.
 - Historical small probe/matrix manifests needed to understand previous guardrail debugging.
@@ -37,7 +39,7 @@ cd minor_bench
 
 uv venv .minor
 source .minor/bin/activate
-uv pip install -r requirements.txt
+uv pip sync requirements.lock
 ```
 
 Create `.env` manually with provider credentials. At minimum, current canonical API-backed runs require the Scaleway credentials used by `model_runner.py`; OpenAI is not required for the current local-HF judge path.
@@ -96,6 +98,14 @@ Some model repos may require Hugging Face terms acceptance before download.
 | `runs/evals/.../20260610_derived_policy_v2_1` | `rescore_policy_outcomes.py` over independent Granite run. | Historical Mistral+Granite run. | End-to-end validation, not primary causal estimate. |
 | `runs/replay/...canonical_20260610` | `run_guardrail_replay.py`. | `20260610_baseline_policy_v2_1` plus validated Granite decisions. | Primary paired counterfactual estimate. |
 | `docs/current_granite_vs_baseline_tables.md` | Manual/report collation from replay outputs. | Canonical baseline, replay, independent validation. | Best single document for current claims. |
+
+## Raw Output Pointers
+
+| Setup | Raw output file | What it contains |
+| --- | --- | --- |
+| Assistant-only baseline | `runs/evals/mistral-small-32-24b-instruct-2506/assistant_child_safety_v2/20260610_baseline_policy_v2_1/results.jsonl` | Prompt rows, assistant generations, effective labels, judge diagnostics. |
+| Granite controlled replay | `runs/replay/mistral_granite_3_2_hateful_policy_v2_1_canonical_20260610/results.jsonl` | Baseline generations plus replayed final responses and guardrail decisions. |
+| Independent Granite validation | `runs/evals/mistral-small-32-24b-instruct-2506/assistant_child_safety_v2/20260610_derived_policy_v2_1/results.jsonl` | End-to-end Granite run, deterministically rescored under `assistant_policy_v2.1`. |
 
 ## Current Main Claims
 

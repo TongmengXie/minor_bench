@@ -1,4 +1,5 @@
 kind,path,produced_by,primary_inputs,used_by,notes
+dependencies,requirements.lock,uv pip compile,requirements.txt,new instances,"Pinned environment; install with uv pip sync requirements.lock."
 policy,assistant_policy.py,manual implementation,assistant_policy_v2 requirements,"evaluator.py; report_generator.py; policy_replay.py; rescore_policy_outcomes.py; run_guardrail_replay.py","Defines metric_definition_version and deterministic guardrail-block outcomes."
 prompts,system_prompts/system_prompts.yaml,manual implementation,policy docs,"run_eval.py; model_runner.py; safety_judge.py","Named assistant, guardrail, Granite-native, and judge prompts."
 guardrail_profiles,guardrails.py,manual implementation,guardrail model contracts,"probe_guardrail_profiles.py; run_eval.py; run_guardrail_replay.py; run_matrix_eval.py","Registry for Granite, Nemotron, WildGuard, Llama Guard, ShieldGemma profiles and parsers."
